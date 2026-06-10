@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { FixedColumnHeaders } from './components/CotizacionDetalleTable';
 import { supabase } from '@/lib/supabase';
+import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import AppLayout from '@/components/feature/AppLayout';
 import type { CotizacionCabecera, CotizacionDetalle, CotizacionColumnaDinamica, CotizacionValorDinamico, DetalleConValores } from '@/types/cotizaciones_v2';
 import { MESES, ESTADO_V2_CONFIG } from '@/types/cotizaciones_v2';
@@ -127,48 +128,26 @@ export default function CotizacionesPage() {
   // ─── Load all base data ───────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     setLoading(true);
+    // Shared reference data (cached) + cotizacion-specific tables fetched in parallel
     const [
+      base,
       { data: cabData },
       { data: colDinData },
       { data: colData },
       { data: filData },
-      { data: invData },
-      { data: gastosColData },
-      { data: gastosFilData },
-      { data: areaDistribData },
-      { data: moColData },
-      { data: moFilData },
-      { data: volColData },
-      { data: volFilData },
-      { data: empData },
-      { data: areasData },
-      { data: volDistData },
-      { data: factoresData },
-      { data: masivoZonData, error: errMasivoZon },
-      { data: masivoTotales, error: errTotales },
     ] = await Promise.all([
+      fetchBaseQueryData(),
       supabase.from('cotizacion_cabecera').select('*').order('anio', { ascending: false }).order('mes', { ascending: false }).order('version', { ascending: false }),
       supabase.from('cotizacion_columnas_dinamicas').select('*').order('sort_order'),
       supabase.from('costos_columnas').select('*').order('orden'),
       supabase.from('costos_operacion').select('*').order('orden'),
-      supabase.from('inversiones').select('*').order('created_at'),
-      supabase.from('gastos_varios_columnas').select('id, nombre, tipo').order('orden'),
-      supabase.from('gastos_varios').select('id, area, concepto, parent_id, es_total, tipo_fila, valores'),
-      supabase.from('area_distribution').select('area_name, global_distribution_percentage'),
-      supabase.from('mano_obra_columnas').select('id, nombre, tipo, is_sensitive').order('orden'),
-      supabase.from('mano_obra').select('id, area, valores'),
-      supabase.from('volumenes_columnas').select('id, nombre, tipo').order('orden'),
-      supabase.from('volumenes').select('id, proceso, subproceso, valores'),
-      supabase.from('mano_obra_empleados').select('*').eq('is_active', true),
-      supabase.from('areas').select('id, nombre, metros_cuadrados, cantidad_racks, categoria').order('nombre'),
-      supabase.from('volumen_distribucion').select('id, nombre, porcentaje, porcentaje_inbound, porcentaje_outbound, categoria, is_active, unidades, es_zona_franca').eq('is_active', true).order('orden'),
-      supabase.from('factores').select('*'),
-      supabase.rpc('fn_volumenes_zona_resumen_v2'),
-      supabase.rpc('fn_volumenes_totales'),
     ]);
 
-    if (errMasivoZon) console.error('Masivo zonas:', errMasivoZon);
-    if (errTotales) console.error('Masivo totales:', errTotales);
+    const {
+      areasData, invData, gastosColData, gastosFilData, areaDistribData,
+      moColData, moFilData, empData, volColData, volFilData,
+      volDistData, factoresData, masivoZonData, masivoTotales,
+    } = base;
 
     const cols = (colData as CostoColumna[]) ?? [];
     const rows = (filData as CostoFila[]) ?? [];

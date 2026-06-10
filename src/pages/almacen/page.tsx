@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useTransition, useDeferredValue } from 'react';
 import { supabase } from '@/lib/supabase';
+import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import AppLayout from '@/components/feature/AppLayout';
 import type { CostoAlmacenColumna, CostoAlmacenFila, ColumnType, FormulaConfig, ZonaColumnaDinamica, ZonaCeldaFormula, AlmacenZonaArticuloCompaniaRow, AlmacenResumenCompleto } from '@/types/almacen';
 import type { FormulaContext } from '@/lib/formulaEngine';
@@ -46,32 +47,26 @@ export default function AlmacenPage() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    // Shared reference data (cached) + almacen-specific tables fetched in parallel
     const [
-      { data: colData }, { data: filData },
-      { data: areasData },
-      { data: invData }, { data: gastosColData }, { data: gastosFilData },
-      { data: areaDistribData }, { data: moColData }, { data: moFilData },
-      { data: volColData }, { data: volFilData }, { data: empData },
-      { data: volDistData }, { data: factoresData },
-      { data: costosOpColData }, { data: costosOpFilData },
+      base,
+      { data: colData },
+      { data: filData },
+      { data: costosOpColData },
+      { data: costosOpFilData },
     ] = await Promise.all([
+      fetchBaseQueryData(),
       supabase.from('costos_almacen_columnas').select('*').order('orden'),
       supabase.from('costos_almacen_operacion').select('*').order('orden'),
-      supabase.from('areas').select('id, nombre, metros_cuadrados, cantidad_racks, metros_cubicos, categoria, costo_area, costo_area_formula').order('nombre'),
-      supabase.from('inversiones').select('*').order('created_at'),
-      supabase.from('gastos_varios_columnas').select('id, nombre, tipo').order('orden'),
-      supabase.from('gastos_varios').select('id, area, concepto, parent_id, es_total, tipo_fila, valores'),
-      supabase.from('area_distribution').select('area_name, global_distribution_percentage'),
-      supabase.from('mano_obra_columnas').select('id, nombre, tipo, is_sensitive').order('orden'),
-      supabase.from('mano_obra').select('id, area, valores'),
-      supabase.from('volumenes_columnas').select('id, nombre, tipo').order('orden'),
-      supabase.from('volumenes').select('id, proceso, subproceso, valores'),
-      supabase.from('mano_obra_empleados').select('*').eq('is_active', true),
-      supabase.from('volumen_distribucion').select('id, nombre, porcentaje, porcentaje_inbound, porcentaje_outbound, categoria, is_active, unidades, es_zona_franca').eq('is_active', true).order('orden'),
-      supabase.from('factores').select('*'),
       supabase.from('costos_columnas').select('*').order('orden'),
       supabase.from('costos_operacion').select('*').order('orden'),
     ]);
+
+    const {
+      areasData, invData, gastosColData, gastosFilData, areaDistribData,
+      moColData, moFilData, empData, volColData, volFilData,
+      volDistData, factoresData,
+    } = base;
 
     const cols = (colData as CostoAlmacenColumna[]) ?? [];
     const rows = (filData as CostoAlmacenFila[]) ?? [];
