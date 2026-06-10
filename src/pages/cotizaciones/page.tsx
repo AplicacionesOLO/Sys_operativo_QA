@@ -5,7 +5,8 @@ import AppLayout from '@/components/feature/AppLayout';
 import type { CotizacionCabecera, CotizacionDetalle, CotizacionColumnaDinamica, CotizacionValorDinamico, DetalleConValores } from '@/types/cotizaciones_v2';
 import { MESES, ESTADO_V2_CONFIG } from '@/types/cotizaciones_v2';
 import type { CostoFila, CostoColumna } from '@/types/costos';
-import { calcularFormula, EMPTY_FORMULA_CTX } from '@/lib/formulaEngine';
+import { calcularFormula, EMPTY_FORMULA_CTX, toAllDataSources } from '@/lib/formulaEngine';
+import { buildVariableDefs, buildVariableMap } from '@/lib/formulaVariables';
 import { buildRowVarContext, computeRowTotal } from '@/lib/cotizacionFormulaEngine';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import type { Area } from '@/types/areas';
@@ -72,15 +73,27 @@ export default function CotizacionesPage() {
     const cols = baseCtx.costosColumnas as CostoColumna[];
     const rows = baseCtx.costosFilas as CostoFila[];
     if (!cols || !rows) return baseCtx;
+
+    // Build variable cache once — reused for every row × column evaluation
+    const allData = toAllDataSources(baseCtx);
+    const cachedDefs = buildVariableDefs(allData);
+    const cachedBaseVarMap = buildVariableMap(cachedDefs, allData, undefined);
+    const ctxWithCache: FormulaContext = {
+      ...baseCtx,
+      _cachedDefs: cachedDefs,
+      _cachedBaseVarMap: cachedBaseVarMap,
+      _cachedAllData: allData,
+    };
+
     const formulaCols = cols.filter(c => c.tipo === 'formula' && c.formula);
     const enriched = formulaCols.length > 0
       ? rows.map(row => {
           const extra: Record<string, number> = {};
-          formulaCols.forEach(col => { extra[col.id] = calcularFormula(col.formula!, baseCtx, row.subproceso ?? ''); });
+          formulaCols.forEach(col => { extra[col.id] = calcularFormula(col.formula!, ctxWithCache, row.subproceso ?? ''); });
           return { ...row, valores: { ...row.valores, ...extra } };
         })
       : rows;
-    return { ...baseCtx, costosFilas: enriched as FormulaContext['costosFilas'] };
+    return { ...ctxWithCache, costosFilas: enriched as FormulaContext['costosFilas'] };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseCtx, volLastN.recibido, volLastN.despachado]);
 
@@ -154,28 +167,24 @@ export default function CotizacionesPage() {
       supabase.rpc('fn_volumenes_totales'),
     ]);
 
-    // Paginated fetch for articulo_resumen (can exceed Supabase default 1000-row limit)
+    // Paginated fetch — both RPCs run in parallel (independent data sets)
     const MASIVO_PAGE = 1000;
-    let masivoArtData: any[] = [];
-    let mOffset = 0;
-    while (true) {
-      const { data: page } = await supabase.rpc('fn_volumenes_articulo_resumen_v3', { p_offset: mOffset, p_limit: MASIVO_PAGE });
-      if (!page || page.length === 0) break;
-      masivoArtData = masivoArtData.concat(page);
-      if (page.length < MASIVO_PAGE) break;
-      mOffset += MASIVO_PAGE;
-    }
-
-    // Paginated fetch for zona_articulos (intersection data)
-    let masivoZAData: any[] = [];
-    let zaOffset = 0;
-    while (true) {
-      const { data: page } = await supabase.rpc('fn_volumenes_zona_articulos_detalle_v3', { p_offset: zaOffset, p_limit: MASIVO_PAGE });
-      if (!page || page.length === 0) break;
-      masivoZAData = masivoZAData.concat(page);
-      if (page.length < MASIVO_PAGE) break;
-      zaOffset += MASIVO_PAGE;
-    }
+    const fetchAllPages = async (rpc: string): Promise<any[]> => {
+      const all: any[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: page } = await supabase.rpc(rpc, { p_offset: offset, p_limit: MASIVO_PAGE });
+        if (!page || page.length === 0) break;
+        all.push(...page);
+        if (page.length < MASIVO_PAGE) break;
+        offset += MASIVO_PAGE;
+      }
+      return all;
+    };
+    const [masivoArtData, masivoZAData] = await Promise.all([
+      fetchAllPages('fn_volumenes_articulo_resumen_v3'),
+      fetchAllPages('fn_volumenes_zona_articulos_detalle_v3'),
+    ]);
 
     if (errMasivoZon) console.error('Masivo zonas:', errMasivoZon);
     if (errTotales) console.error('Masivo totales:', errTotales);
@@ -263,13 +272,11 @@ export default function CotizacionesPage() {
       return;
     }
     setLoadingDetalles(true);
-    const [{ data: detData }, { data: valData }] = await Promise.all([
-      supabase.from('cotizacion_detalle').select('*').eq('cabecera_id', cabeceraId).order('orden'),
-      supabase.from('cotizacion_valores_dinamicos').select('*').in(
-        'detalle_id',
-        ['00000000-0000-0000-0000-000000000000']
-      ),
-    ]);
+    const { data: detData } = await supabase
+      .from('cotizacion_detalle')
+      .select('*')
+      .eq('cabecera_id', cabeceraId)
+      .order('orden');
     const dets = (detData as CotizacionDetalle[]) ?? [];
     setDetalles(dets);
 

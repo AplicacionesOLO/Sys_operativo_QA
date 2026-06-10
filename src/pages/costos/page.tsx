@@ -135,28 +135,24 @@ export default function CostosPage() {
         supabase.rpc('fn_volumenes_totales'),
       ]);
 
-      // Paginated fetch for articulo_resumen (can exceed Supabase default 1000-row limit)
+      // Paginated fetch — both RPCs run in parallel (independent data sets)
       const MASIVO_PAGE = 1000;
-      let masivoArtData: any[] = [];
-      let mOffset = 0;
-      while (true) {
-        const { data: page } = await supabase.rpc('fn_volumenes_articulo_resumen_v3', { p_offset: mOffset, p_limit: MASIVO_PAGE });
-        if (!page || page.length === 0) break;
-        masivoArtData = masivoArtData.concat(page);
-        if (page.length < MASIVO_PAGE) break;
-        mOffset += MASIVO_PAGE;
-      }
-
-      // Paginated fetch for zona_articulos (intersection data)
-      let masivoZAData: any[] = [];
-      let zaOffset = 0;
-      while (true) {
-        const { data: page } = await supabase.rpc('fn_volumenes_zona_articulos_detalle_v3', { p_offset: zaOffset, p_limit: MASIVO_PAGE });
-        if (!page || page.length === 0) break;
-        masivoZAData = masivoZAData.concat(page);
-        if (page.length < MASIVO_PAGE) break;
-        zaOffset += MASIVO_PAGE;
-      }
+      const fetchAllPages = async (rpc: string): Promise<any[]> => {
+        const all: any[] = [];
+        let offset = 0;
+        while (true) {
+          const { data: page } = await supabase.rpc(rpc, { p_offset: offset, p_limit: MASIVO_PAGE });
+          if (!page || page.length === 0) break;
+          all.push(...page);
+          if (page.length < MASIVO_PAGE) break;
+          offset += MASIVO_PAGE;
+        }
+        return all;
+      };
+      const [masivoArtData, masivoZAData] = await Promise.all([
+        fetchAllPages('fn_volumenes_articulo_resumen_v3'),
+        fetchAllPages('fn_volumenes_zona_articulos_detalle_v3'),
+      ]);
 
       if (errMasivoZon) console.error('Masivo zonas:', errMasivoZon);
       if (errTotales) console.error('Masivo totales:', errTotales);

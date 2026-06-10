@@ -60,12 +60,12 @@ serve(async (req: Request) => {
 
     // Paginated fetch for articulo_resumen (can exceed Supabase default 1000-row limit)
     const MASIVO_PAGE = 1000;
-    let masivoArtData: any[] = [];
+    const masivoArtData: any[] = [];
     let mOffset = 0;
     while (true) {
       const { data: page } = await supabase.rpc("fn_volumenes_articulo_resumen_v3", { p_offset: mOffset, p_limit: MASIVO_PAGE });
       if (!page || page.length === 0) break;
-      masivoArtData = masivoArtData.concat(page);
+      masivoArtData.push(...page);
       if (page.length < MASIVO_PAGE) break;
       mOffset += MASIVO_PAGE;
     }
