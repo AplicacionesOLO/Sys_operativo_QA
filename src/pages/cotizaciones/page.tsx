@@ -167,25 +167,6 @@ export default function CotizacionesPage() {
       supabase.rpc('fn_volumenes_totales'),
     ]);
 
-    // Paginated fetch — both RPCs run in parallel (independent data sets)
-    const MASIVO_PAGE = 1000;
-    const fetchAllPages = async (rpc: string): Promise<any[]> => {
-      const all: any[] = [];
-      let offset = 0;
-      while (true) {
-        const { data: page } = await supabase.rpc(rpc, { p_offset: offset, p_limit: MASIVO_PAGE });
-        if (!page || page.length === 0) break;
-        all.push(...page);
-        if (page.length < MASIVO_PAGE) break;
-        offset += MASIVO_PAGE;
-      }
-      return all;
-    };
-    const [masivoArtData, masivoZAData] = await Promise.all([
-      fetchAllPages('fn_volumenes_articulo_resumen_v3'),
-      fetchAllPages('fn_volumenes_zona_articulos_detalle_v3'),
-    ]);
-
     if (errMasivoZon) console.error('Masivo zonas:', errMasivoZon);
     if (errTotales) console.error('Masivo totales:', errTotales);
 
@@ -208,7 +189,7 @@ export default function CotizacionesPage() {
       return { ...d, categoria: cat, category_distribution_percentage: catTotal > 0 ? +((areaM2 / catTotal) * 100).toFixed(2) : 0 };
     });
 
-    setBaseCtx({
+    const coreCtx: FormulaContext = {
       inversiones: (invData as InversionRecord[]) ?? [],
       gastosColumnas: (gastosColData ?? []) as FormulaContext['gastosColumnas'],
       gastosFilas: (gastosFilData ?? []) as FormulaContext['gastosFilas'],
@@ -223,15 +204,7 @@ export default function CotizacionesPage() {
       areasData: mappedAreas,
       volDistribucion: (volDistData ?? []) as FormulaContext['volDistribucion'],
       factores: (factoresData ?? []) as FormulaContext['factores'],
-      masivoArticulos: ((masivoArtData ?? []) as any[]).map((r: any) => ({
-        articulo: String(r.articulo ?? ''),
-        descripcion: String(r.descripcion ?? ''),
-        movimientos: Number(r.movimientos) || 0,
-        unidades: Number(r.unidades) || 0,
-        meses_distintos: Number(r.meses_distintos) || 0,
-        prom_movimientos_mes: Number(r.prom_movimientos_mes) || 0,
-        prom_unidades_mes: Number(r.prom_unidades_mes) || 0,
-      })),
+      masivoArticulos: [], // populated in background after UI renders
       masivoZonas: ((masivoZonData ?? []) as any[]).map((r: any) => ({
         zona: String(r.zona ?? ''),
         movimientos: Number(r.movimientos) || 0,
@@ -241,13 +214,7 @@ export default function CotizacionesPage() {
         prom_movimientos_mes: Number(r.prom_movimientos_mes) || 0,
         prom_unidades_mes: Number(r.prom_unidades_mes) || 0,
       })),
-      masivoZonaArticulos: ((masivoZAData ?? []) as any[]).map((r: any) => ({
-        zona: String(r.zona ?? ''),
-        articulo: String(r.articulo ?? ''),
-        descripcion: String(r.descripcion ?? ''),
-        movimientos: Number(r.movimientos) || 0,
-        unidades: Number(r.unidades) || 0,
-      })),
+      masivoZonaArticulos: [], // populated in background after UI renders
       masivoTotals: (() => {
         const t0 = (masivoTotales as any[] | undefined)?.[0] ?? {};
         return {
@@ -259,8 +226,48 @@ export default function CotizacionesPage() {
           totalUnidZonas: Number(t0.total_unid_zonas) || 0,
         };
       })(),
-    });
-    setLoading(false);
+    };
+    setBaseCtx(coreCtx);
+    setLoading(false); // UI is interactive now
+
+    // Phase 2: load masivo RPCs in background — they're slow (large datasets)
+    // Formulas using MASIVO_* tokens will auto-update when this resolves
+    const MASIVO_PAGE = 1000;
+    const fetchAllPages = async (rpc: string): Promise<any[]> => {
+      const all: any[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: page } = await supabase.rpc(rpc, { p_offset: offset, p_limit: MASIVO_PAGE });
+        if (!page || page.length === 0) break;
+        all.push(...page);
+        if (page.length < MASIVO_PAGE) break;
+        offset += MASIVO_PAGE;
+      }
+      return all;
+    };
+    const [masivoArtData, masivoZAData] = await Promise.all([
+      fetchAllPages('fn_volumenes_articulo_resumen_v3'),
+      fetchAllPages('fn_volumenes_zona_articulos_detalle_v3'),
+    ]);
+    setBaseCtx(prev => ({
+      ...prev,
+      masivoArticulos: (masivoArtData as any[]).map((r: any) => ({
+        articulo: String(r.articulo ?? ''),
+        descripcion: String(r.descripcion ?? ''),
+        movimientos: Number(r.movimientos) || 0,
+        unidades: Number(r.unidades) || 0,
+        meses_distintos: Number(r.meses_distintos) || 0,
+        prom_movimientos_mes: Number(r.prom_movimientos_mes) || 0,
+        prom_unidades_mes: Number(r.prom_unidades_mes) || 0,
+      })),
+      masivoZonaArticulos: (masivoZAData as any[]).map((r: any) => ({
+        zona: String(r.zona ?? ''),
+        articulo: String(r.articulo ?? ''),
+        descripcion: String(r.descripcion ?? ''),
+        movimientos: Number(r.movimientos) || 0,
+        unidades: Number(r.unidades) || 0,
+      })),
+    }));
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
