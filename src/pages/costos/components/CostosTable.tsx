@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   DndContext,
   closestCenter,
@@ -294,20 +294,36 @@ export default function CostosTable({
     onReorderColumns(arrayMove(columnas, oldIdx, newIdx));
   }, [columnas, onReorderColumns]);
 
-  // ── Row grouping metadata ─────────────────────────────────────────────────
+  // ── Display-order: group rows by proceso so boundaries are always respected ──
+  //    This keeps each proceso group visually together regardless of the `orden`
+  //    values in the database (which reflect insertion order, not group order).
+  const displayFilas = useMemo<CostoFila[]>(() => {
+    const groupOrder: string[] = [];
+    const groups: Record<string, CostoFila[]> = {};
+    filas.forEach(f => {
+      if (!groups[f.proceso]) {
+        groups[f.proceso] = [];
+        groupOrder.push(f.proceso);
+      }
+      groups[f.proceso].push(f);
+    });
+    return groupOrder.flatMap(p => groups[p]);
+  }, [filas]);
+
+  // ── Row grouping metadata (computed from display-order array) ──────────────
   const firstOfProceso = new Set<string>();
   const lastOfProceso  = new Set<string>();
   const seenProcesos   = new Set<string>();
-  filas.forEach((f, i) => {
+  displayFilas.forEach((f, i) => {
     if (!seenProcesos.has(f.proceso)) {
       seenProcesos.add(f.proceso);
       firstOfProceso.add(f.id);
     }
-    const next = filas[i + 1];
+    const next = displayFilas[i + 1];
     if (!next || next.proceso !== f.proceso) lastOfProceso.add(f.id);
   });
 
-  const hasData   = filas.length > 0;
+  const hasData   = displayFilas.length > 0;
   const tableMinW = COL_W_PROCESO + COL_W_SUBPROC
     + columnas.length * COL_W_DYNAMIC
     + (columnas.length > 0 ? COL_W_TOTAL : 0)
@@ -455,7 +471,7 @@ export default function CostosTable({
 
             <tbody>
               {hasData ? (
-                filas.map(fila => (
+                displayFilas.map(fila => (
                   <CostosTableRow
                     key={fila.id}
                     fila={fila}
