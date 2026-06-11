@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import type { Factor } from '@/types/factores';
+import { cascadeRenameTokens, factorRenamePairs } from '@/lib/formulaTokenRename';
 
 interface FactorModalState {
   open: boolean;
@@ -52,6 +53,10 @@ export default function FactoresPage() {
     const payload = { nombre: nombre.trim(), valor: v, descripcion: descripcion.trim() || null };
     if (modal.editing) {
       await supabase.from('factores').update(payload).eq('id', modal.editing.id);
+      // Cascade-rename FACTOR_* tokens if nombre changed
+      if (nombre.trim() !== modal.editing.nombre) {
+        cascadeRenameTokens(factorRenamePairs(modal.editing.nombre, nombre.trim()));
+      }
     } else {
       await supabase.from('factores').insert(payload);
     }

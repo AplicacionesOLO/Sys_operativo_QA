@@ -4,6 +4,7 @@ import AreasTab from './components/AreasTab';
 import TiposAreaTab from './components/TiposAreaTab';
 import ZonasTab from './components/ZonasTab';
 import { supabase, isSupabaseReady } from '../../lib/supabase';
+import { cascadeRenameTokens, areaRenamePairs } from '@/lib/formulaTokenRename';
 import type { Area, TipoArea, Zona } from '../../types/areas';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, calcularFormula } from '@/lib/formulaEngine';
@@ -160,8 +161,15 @@ export default function AreasPage() {
   };
 
   const editArea = async (id: string, data: Omit<Area, 'id' | 'created_at'>) => {
+    const oldArea = areas.find(a => a.id === id);
     const { error: err } = await supabase.from('areas').update(data).eq('id', id);
-    if (!err) fetchAll();
+    if (!err) {
+      // Cascade-rename area tokens in all formula expressions if nombre changed
+      if (oldArea && data.nombre !== oldArea.nombre) {
+        cascadeRenameTokens(areaRenamePairs(oldArea.nombre, data.nombre));
+      }
+      fetchAll();
+    }
   };
 
   const deleteArea = async (id: string) => {

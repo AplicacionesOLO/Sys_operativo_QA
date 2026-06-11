@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import { logChange } from '@/lib/auditLog';
+import { cascadeRenameTokens, costosRowRenamePairs } from '@/lib/formulaTokenRename';
 import AppLayout from '@/components/feature/AppLayout';
 import ErrorBoundary from '@/components/feature/ErrorBoundary';
 import type { CostoColumna, CostoFila, ColumnType, FormulaConfig } from '@/types/costos';
@@ -366,6 +367,12 @@ export default function CostosPage() {
       valor_antes: fila ? (fila as unknown as Record<string, unknown>)[field] ?? null : null,
       valor_despues: value,
     });
+    // If proceso or subproceso changes, cascade-rename COSTOS_TOTAL_* tokens
+    if (fila && (field === 'proceso' || field === 'subproceso') && String(value) !== String((fila as unknown as Record<string, unknown>)[field] ?? '')) {
+      const newProceso = field === 'proceso' ? String(value) : (fila.proceso ?? '');
+      const newSubproceso = field === 'subproceso' ? String(value) : (fila.subproceso ?? '');
+      cascadeRenameTokens(costosRowRenamePairs(fila.proceso ?? '', fila.subproceso ?? '', newProceso, newSubproceso));
+    }
     setSavingId(id);
     setFilas(prev => prev.map(f => f.id === id ? { ...f, [field]: value } : f));
     await supabase.from('costos_operacion').update({ [field]: value }).eq('id', id);
