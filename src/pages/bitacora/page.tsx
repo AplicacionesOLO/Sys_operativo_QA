@@ -72,6 +72,21 @@ function timeAgo(iso: string): string {
 
 function formatValue(val: unknown): string {
   if (val === null || val === undefined) return '—';
+
+  // FormulaConfig — show the expression or term names instead of raw JSON
+  if (typeof val === 'object' && val !== null && 'mode' in (val as object)) {
+    const f = val as { mode: string; expression?: string; terminos?: { referenciaNombre?: string; tipo?: string }[] };
+    if (f.mode === 'expression') {
+      const expr = (f.expression ?? '').replace(/\n+/g, ' ').trim();
+      return expr || '(sin expresión)';
+    }
+    if (f.mode === 'terms') {
+      const terms = f.terminos ?? [];
+      if (terms.length === 0) return '(sin términos)';
+      return terms.map(t => t.referenciaNombre ?? t.tipo ?? '?').join(' + ');
+    }
+  }
+
   if (typeof val === 'object') {
     try { return JSON.stringify(val, null, 2); } catch { return String(val); }
   }
