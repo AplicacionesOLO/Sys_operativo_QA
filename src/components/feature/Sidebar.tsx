@@ -117,8 +117,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             );
           })}
 
-        {/* Configuración separado */}
-        {canView('configuracion') && (
+        {/* Sistema: Configuración + Bitácora (admin only) */}
+        {(canView('configuracion') || role?.nombre === 'Administrador') && (
           <>
             <div className="pt-3 pb-1">
               {!collapsed && (
@@ -126,22 +126,44 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
               {collapsed && <div className="border-t border-slate-700/50 mx-2" />}
             </div>
-            <NavLink
-              to="/configuracion"
-              title={collapsed ? 'Configuración' : undefined}
-              className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap ${
-                collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
-              } ${
-                location.pathname.startsWith('/configuracion')
-                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
-              }`}
-            >
-              <div className="w-5 h-5 flex items-center justify-center shrink-0">
-                <i className="ri-settings-3-line text-base" />
-              </div>
-              {!collapsed && <span className="truncate">Configuración</span>}
-            </NavLink>
+
+            {canView('configuracion') && (
+              <NavLink
+                to="/configuracion"
+                title={collapsed ? 'Configuración' : undefined}
+                className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap ${
+                  collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
+                } ${
+                  location.pathname.startsWith('/configuracion')
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+                }`}
+              >
+                <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                  <i className="ri-settings-3-line text-base" />
+                </div>
+                {!collapsed && <span className="truncate">Configuración</span>}
+              </NavLink>
+            )}
+
+            {role?.nombre === 'Administrador' && (
+              <NavLink
+                to="/bitacora"
+                title={collapsed ? 'Bitácora de Cambios' : undefined}
+                className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap ${
+                  collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
+                } ${
+                  location.pathname.startsWith('/bitacora')
+                    ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+                }`}
+              >
+                <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                  <i className="ri-history-line text-base" />
+                </div>
+                {!collapsed && <span className="truncate">Bitácora</span>}
+              </NavLink>
+            )}
           </>
         )}
       </nav>
