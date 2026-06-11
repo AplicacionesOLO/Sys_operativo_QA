@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { FixedColumnHeaders } from './components/CotizacionDetalleTable';
 import { supabase } from '@/lib/supabase';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import AppLayout from '@/components/feature/AppLayout';
 import type { CotizacionCabecera, CotizacionDetalle, CotizacionColumnaDinamica, CotizacionValorDinamico, DetalleConValores } from '@/types/cotizaciones_v2';
 import { MESES, ESTADO_V2_CONFIG } from '@/types/cotizaciones_v2';
@@ -531,9 +532,17 @@ export default function CotizacionesPage() {
   // Using regular functions (not useCallback) to completely avoid stale closures
   async function handleUpdateDetalle(id: string, field: keyof CotizacionDetalle, value: number | string) {
     const numericValue = field === 'multiplicador_base' ? parseFloat(String(value)) || 0 : value;
+    const det = detallesRef.current.find(d => d.id === id);
+    logChange({
+      modulo: 'cotizaciones', accion: 'update_multiplicador',
+      entidad_tipo: 'cotizacion_detalle', entidad_id: id,
+      entidad_label: det ? `${det.proceso} › ${det.subproceso}` : id,
+      campo: String(field),
+      valor_antes: det ? det[field] ?? null : null,
+      valor_despues: numericValue,
+    });
 
     // Compute total using the value we just received
-    const det = detallesRef.current.find(d => d.id === id);
     const costoBase = det?.costo_base ?? 0;
     const multBase = field === 'multiplicador_base' ? (numericValue as number) : (det?.multiplicador_base ?? 1);
     const total = costoBase * multBase;
@@ -548,6 +557,15 @@ export default function CotizacionesPage() {
   async function handleUpdateValorDinamico(detalleId: string, columnaId: string, rawValue: string) {
     const computed = parseFloat(rawValue) || 0;
     const existing = valoresDinamicosRef.current.find(v => v.detalle_id === detalleId && v.columna_id === columnaId);
+    const det = detallesRef.current.find(d => d.id === detalleId);
+    logChange({
+      modulo: 'cotizaciones', accion: 'update_valor_dinamico',
+      entidad_tipo: 'cotizacion_valores_dinamicos', entidad_id: detalleId,
+      entidad_label: det ? `${det.proceso} › ${det.subproceso}` : detalleId,
+      campo: columnasDinamicas.find(c => c.id === columnaId)?.name ?? columnaId,
+      valor_antes: existing?.raw_value ?? null,
+      valor_despues: rawValue,
+    });
 
     if (existing) {
       setValoresDinamicos(prev => prev.map(v => v.id === existing.id ? { ...v, raw_value: rawValue, computed_value: computed } : v));

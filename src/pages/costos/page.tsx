@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import AppLayout from '@/components/feature/AppLayout';
 import ErrorBoundary from '@/components/feature/ErrorBoundary';
 import type { CostoColumna, CostoFila, ColumnType, FormulaConfig } from '@/types/costos';
@@ -356,6 +357,15 @@ export default function CostosPage() {
   }, []);
 
   const handleUpdateFila = useCallback(async (id: string, field: string, value: string | number) => {
+    const fila = filasRef.current.find(f => f.id === id);
+    logChange({
+      modulo: 'costos', accion: 'update_row',
+      entidad_tipo: 'costos_operacion', entidad_id: id,
+      entidad_label: fila ? (fila.subproceso ? `${fila.proceso} › ${fila.subproceso}` : fila.proceso) : id,
+      campo: field,
+      valor_antes: fila ? (fila as unknown as Record<string, unknown>)[field] ?? null : null,
+      valor_despues: value,
+    });
     setSavingId(id);
     setFilas(prev => prev.map(f => f.id === id ? { ...f, [field]: value } : f));
     await supabase.from('costos_operacion').update({ [field]: value }).eq('id', id);
@@ -363,16 +373,21 @@ export default function CostosPage() {
   }, []);
 
   const handleUpdateCell = useCallback(async (id: string, columnaId: string, value: string | number) => {
-    setSavingId(id);
-    setFilas(prev => prev.map(f => {
-      if (f.id !== id) return f;
-      return { ...f, valores: { ...f.valores, [columnaId]: value } };
-    }));
     const fila = filas.find(f => f.id === id);
-    if (!fila) { setSavingId(null); return; }
+    if (!fila) return;
+    logChange({
+      modulo: 'costos', accion: 'update_cell',
+      entidad_tipo: 'costos_operacion', entidad_id: id,
+      entidad_label: fila.subproceso ? `${fila.proceso} › ${fila.subproceso}` : fila.proceso,
+      campo: columnas.find(c => c.id === columnaId)?.nombre ?? columnaId,
+      valor_antes: fila.valores[columnaId] ?? null,
+      valor_despues: value,
+    });
+    setSavingId(id);
+    setFilas(prev => prev.map(f => f.id !== id ? f : { ...f, valores: { ...f.valores, [columnaId]: value } }));
     await supabase.from('costos_operacion').update({ valores: { ...fila.valores, [columnaId]: value } }).eq('id', id);
     setSavingId(null);
-  }, [filas]);
+  }, [filas, columnas]);
 
   const handleDeleteFila = async (id: string) => {
     await supabase.from('costos_operacion').delete().eq('id', id);
@@ -383,12 +398,19 @@ export default function CostosPage() {
   const handleSaveRowFormula = useCallback(async (rowId: string, colId: string, formula: import('@/types/costos').FormulaConfig) => {
     const fila = filas.find(f => f.id === rowId);
     if (!fila) return;
+    logChange({
+      modulo: 'costos', accion: 'update_formula',
+      entidad_tipo: 'costos_operacion', entidad_id: rowId,
+      entidad_label: fila.subproceso ? `${fila.proceso} › ${fila.subproceso}` : fila.proceso,
+      campo: columnas.find(c => c.id === colId)?.nombre ?? colId,
+      valor_antes: fila.formulas?.[colId] ?? null,
+      valor_despues: formula,
+    });
     const newFormulas = { ...(fila.formulas ?? {}), [colId]: formula };
     setFilas(prev => prev.map(f => f.id === rowId ? { ...f, formulas: newFormulas } : f));
     await supabase.from('costos_operacion').update({ formulas: newFormulas }).eq('id', rowId);
-    // Rebuild formula context so formula results are fresh
     await loadData();
-  }, [filas, loadData]);
+  }, [filas, columnas, loadData]);
 
   // ---------- COLUMN REORDER ----------
   const handleReorderColumns = useCallback(async (newOrder: CostoColumna[]) => {
@@ -405,12 +427,20 @@ export default function CostosPage() {
   const handleClearRowFormula = useCallback(async (rowId: string, colId: string) => {
     const fila = filas.find(f => f.id === rowId);
     if (!fila) return;
+    logChange({
+      modulo: 'costos', accion: 'clear_formula',
+      entidad_tipo: 'costos_operacion', entidad_id: rowId,
+      entidad_label: fila.subproceso ? `${fila.proceso} › ${fila.subproceso}` : fila.proceso,
+      campo: columnas.find(c => c.id === colId)?.nombre ?? colId,
+      valor_antes: fila.formulas?.[colId] ?? null,
+      valor_despues: null,
+    });
     const newFormulas = { ...(fila.formulas ?? {}) };
     delete newFormulas[colId];
     setFilas(prev => prev.map(f => f.id === rowId ? { ...f, formulas: newFormulas } : f));
     await supabase.from('costos_operacion').update({ formulas: newFormulas }).eq('id', rowId);
     await loadData();
-  }, [filas, loadData]);
+  }, [filas, columnas, loadData]);
 
   // Count data sources for banner
   const srcCount = {
