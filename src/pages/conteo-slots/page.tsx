@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import type { FormulaContext } from '@/lib/formulaEngine';
-import { EMPTY_FORMULA_CTX, toAllDataSources } from '@/lib/formulaEngine';
+import { EMPTY_FORMULA_CTX, toAllDataSources, calcularFormula } from '@/lib/formulaEngine';
 import type { InversionRecord } from '@/types/inversion';
 import { evalFormula } from '@/lib/mathEvaluator';
 import { buildVariableDefs, buildVariableMap, type VariableDef } from '@/lib/formulaVariables';
@@ -975,28 +975,74 @@ export default function ConteoSlotsPage() {
     const zonas = ((zonasRaw??[]) as any[]).map((r:any)=>({ zona:String(r.zona??''), total_slots:Number(r.total_slots)||0, libres:Number(r.libres)||0, bloqueados:Number(r.bloqueados)||0, reservados:Number(r.reservados)||0, otros:Number(r.otros)||0 }));
     setZonaResumen(zonas);
 
-    // Build formulaCtx for system variables in formula editor
-    const { areasData,invData,gastosColData,gastosFilData,areaDistribData,moColData,moFilData,volColData,volFilData,empData,volDistData,factoresData,costosColData,costosFilData } = base as any;
-    const [{ data: slotsColData }, { data: slotsFilData }] = await Promise.all([
+    // Build formulaCtx — same enrichment as costos/page.tsx for accurate COSTOS_TOTAL_* tokens
+    const { areasData,invData,gastosColData,gastosFilData,areaDistribData,moColData,moFilData,volColData,volFilData,empData,volDistData,factoresData } = base as any;
+    const [{ data: cosColData }, { data: cosFilData }] = await Promise.all([
       supabase.from('costos_columnas').select('*').order('orden'),
       supabase.from('costos_operacion').select('*').order('orden'),
     ]);
-    setFormulaCtx({
+
+    // ── Enrich areaDistribucion (adds categoria + category/cubic %) ──────────
+    const areasWithCat = ((areasData ?? []) as any[]).map((a: any) => ({
+      nombre: a.nombre, metros_cuadrados: a.metros_cuadrados ?? 0,
+      metros_cubicos: a.metros_cubicos ?? 0, cantidad_racks: a.cantidad_racks ?? 0,
+      categoria: a.categoria, costo_area: a.costo_area ?? 0, costo_area_formula: a.costo_area_formula,
+    }));
+    const categoryTotals: Record<string, number> = {};
+    const categoryTotalsCubic: Record<string, number> = {};
+    let totalM3Global = 0;
+    areasWithCat.forEach(a => {
+      const cat = a.categoria ?? 'Sin categoría';
+      categoryTotals[cat] = (categoryTotals[cat] ?? 0) + (a.metros_cuadrados ?? 0);
+      categoryTotalsCubic[cat] = (categoryTotalsCubic[cat] ?? 0) + (a.metros_cubicos ?? 0);
+      totalM3Global += a.metros_cubicos ?? 0;
+    });
+    const enrichedAreaDist = ((areaDistribData ?? []) as any[]).map((d: any) => {
+      const match = areasWithCat.find(a => a.nombre === d.area_name);
+      const cat = match?.categoria ?? 'Sin categoría';
+      const areaM2 = match?.metros_cuadrados ?? 0;
+      const areaM3 = match?.metros_cubicos ?? 0;
+      const catTotal = categoryTotals[cat] ?? 0;
+      const catTotalCubic = categoryTotalsCubic[cat] ?? 0;
+      return {
+        ...d, categoria: cat,
+        category_distribution_percentage:    catTotal      > 0 ? +((areaM2 / catTotal)      * 100).toFixed(2) : 0,
+        global_distribution_cubic_percentage: totalM3Global > 0 ? +((areaM3 / totalM3Global) * 100).toFixed(2) : 0,
+        category_distribution_cubic_percentage: catTotalCubic > 0 ? +((areaM3 / catTotalCubic) * 100).toFixed(2) : 0,
+      };
+    });
+
+    // ── Base context (without costo_area formulas yet, to avoid circularity) ──
+    const baseCtxForAreas: FormulaContext = {
       inversiones: (invData as InversionRecord[]) ?? [],
-      gastosColumnas: (gastosColData??[]) as FormulaContext['gastosColumnas'],
-      gastosFilas: (gastosFilData??[]) as FormulaContext['gastosFilas'],
-      areaDistribucion: (areaDistribData??[]) as FormulaContext['areaDistribucion'],
-      manoObraColumnas: (moColData??[]) as FormulaContext['manoObraColumnas'],
-      manoObraFilas: (moFilData??[]) as FormulaContext['manoObraFilas'],
-      manoObraEmpleados: (empData??[]) as FormulaContext['manoObraEmpleados'],
-      volumenesColumnas: (volColData??[]) as FormulaContext['volumenesColumnas'],
-      volumenesFilas: (volFilData??[]) as FormulaContext['volumenesFilas'],
-      costosColumnas: (slotsColData??[]) as FormulaContext['costosColumnas'],
-      costosFilas: (slotsFilData??[]) as FormulaContext['costosFilas'],
-      areasData: ((areasData??[]) as any[]).map((a:any)=>({ nombre:a.nombre, metros_cuadrados:a.metros_cuadrados??0, cantidad_racks:a.cantidad_racks??0, metros_cubicos:a.metros_cubicos??0, costo_area:a.costo_area??0 })),
-      volDistribucion: (volDistData??[]) as FormulaContext['volDistribucion'],
-      factores: (factoresData??[]) as FormulaContext['factores'],
+      gastosColumnas: (gastosColData ?? []) as FormulaContext['gastosColumnas'],
+      gastosFilas: (gastosFilData ?? []) as FormulaContext['gastosFilas'],
+      areaDistribucion: enrichedAreaDist as FormulaContext['areaDistribucion'],
+      manoObraColumnas: (moColData ?? []) as FormulaContext['manoObraColumnas'],
+      manoObraFilas: (moFilData ?? []) as FormulaContext['manoObraFilas'],
+      manoObraEmpleados: (empData ?? []) as FormulaContext['manoObraEmpleados'],
+      volumenesColumnas: (volColData ?? []) as FormulaContext['volumenesColumnas'],
+      volumenesFilas: (volFilData ?? []) as FormulaContext['volumenesFilas'],
+      costosColumnas: (cosColData ?? []) as FormulaContext['costosColumnas'],
+      costosFilas: (cosFilData ?? []) as FormulaContext['costosFilas'],
+      areasData: areasWithCat.map(a => ({ nombre: a.nombre, metros_cuadrados: a.metros_cuadrados, cantidad_racks: a.cantidad_racks, metros_cubicos: a.metros_cubicos, costo_area: a.costo_area })),
+      volDistribucion: (volDistData ?? []) as FormulaContext['volDistribucion'],
+      factores: (factoresData ?? []) as FormulaContext['factores'],
       masivoArticulos: [], masivoZonas: [], masivoZonaArticulos: [], masivoTotals: undefined,
+    };
+
+    // ── Compute costo_area from formula for each area (same as costos/page.tsx) ──
+    const mappedAreasData = areasWithCat.map(a => ({ ...a }));
+    for (const area of mappedAreasData) {
+      if (area.costo_area_formula) {
+        try { area.costo_area = calcularFormula(area.costo_area_formula, baseCtxForAreas, area.nombre); } catch { /* keep stored value */ }
+      }
+    }
+
+    setFormulaCtx({
+      ...baseCtxForAreas,
+      // Override areasData with formula-computed costo_area
+      areasData: mappedAreasData.map(a => ({ nombre: a.nombre, metros_cuadrados: a.metros_cuadrados, cantidad_racks: a.cantidad_racks, metros_cubicos: a.metros_cubicos, costo_area: a.costo_area })),
     });
     setLoading(false);
   }, []);

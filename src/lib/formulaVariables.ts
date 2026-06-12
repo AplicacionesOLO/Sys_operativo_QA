@@ -792,6 +792,15 @@ export function buildVariableDefs(data: AllDataSources): VariableDef[] {
       try { partialVarMap[d.token] = d.computeValue(data); } catch { partialVarMap[d.token] = 0; }
     });
 
+    // Tokens que dependen del subproceso de la fila (DIST_FILA, M2_FILA, etc.)
+    // Se deben parchar con el subproceso correcto de cada fila para que los
+    // totales de COSTOS_TOTAL_* coincidan con lo que muestra la tabla de Costos.
+    const rowDependentTokens = new Set([
+      'DIST_FILA','DIST_FILA_CAT','DIST_CUBIC_FILA','DIST_CUBIC_FILA_CAT',
+      'M2_FILA','M3_FILA','RACKS_FILA','COSTO_AREA_FILA','COSTOS_TOTAL_FILA',
+    ]);
+    const rowDepDefs = defs.filter(d => rowDependentTokens.has(d.token));
+
     const seen = new Set<string>();
     data.costosFilas.forEach(row => {
       const proc = (row.proceso ?? '').trim();
@@ -808,12 +817,19 @@ export function buildVariableDefs(data: AllDataSources): VariableDef[] {
       );
 
       matching.forEach(fila => {
+        // Parchar tokens dependientes de fila con el subproceso correcto
+        const rowVarMap = { ...partialVarMap };
+        const filaSp = (fila as any).subproceso ?? sp;
+        rowDepDefs.forEach(d => {
+          try { rowVarMap[d.token] = d.computeValue(data, filaSp); } catch { rowVarMap[d.token] = 0; }
+        });
+
         data.costosColumnas.forEach(col => {
           if (col.tipo === 'texto' || col.tipo === 'select') return;
           if (col.tipo === 'formula') {
             const f = (fila as any).formulas?.[col.id] ?? (col as any).formula;
             if (f?.mode === 'expression' && f.expression?.trim()) {
-              const r = evalFormula(f.expression, partialVarMap);
+              const r = evalFormula(f.expression, rowVarMap);
               total += r.ok ? r.value : 0;
             }
           } else {
