@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AppLayout from '@/components/feature/AppLayout';
 import { supabase } from '@/lib/supabase';
 import type { VolDistribucion } from '@/types/vol_distribucion';
+import { cascadeRenameTokens, volDistRenamePairs } from '@/lib/formulaTokenRename';
 import { COLOR_CONFIG } from '@/types/vol_distribucion';
 import VolDistribucionChart from './components/VolDistribucionChart';
 import VolDistribucionTotal from './components/VolDistribucionTotal';
@@ -96,9 +97,16 @@ export default function VolDistribucionPage() {
   }, []);
 
   const handleUpdate = useCallback((id: string, fields: Partial<VolDistribucion>) => {
+    // Cascade-rename VOLDIST_* tokens if nombre changes
+    if (fields.nombre !== undefined) {
+      const oldItem = items.find(i => i.id === id);
+      if (oldItem && oldItem.nombre !== fields.nombre) {
+        cascadeRenameTokens(volDistRenamePairs(oldItem.nombre, fields.nombre));
+      }
+    }
     setItems(prev => prev.map(i => i.id === id ? { ...i, ...fields } : i));
     debouncedSave(id, fields);
-  }, [debouncedSave]);
+  }, [debouncedSave, items]);
 
   const recalcPorcentajes = useCallback((updatedItems: VolDistribucion[], cat: CategoriaTab) => {
     const catDB = CAT_DB[cat];

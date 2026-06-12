@@ -141,6 +141,37 @@ export function factorRenamePairs(
   return [{ oldToken: `FACTOR_${o}`, newToken: `FACTOR_${n}` }];
 }
 
+/** Vol. Distribución segment renamed → VOLDIST_* token pairs. */
+export function volDistRenamePairs(
+  oldNombre: string,
+  newNombre: string,
+): { oldToken: string; newToken: string }[] {
+  if (!oldNombre || !newNombre || oldNombre === newNombre) return [];
+  const o = sanitizeAreaToken(oldNombre);
+  const n = sanitizeAreaToken(newNombre);
+  if (o === n) return [];
+  const prefixes = [
+    'VOLDIST_IN', 'VOLDIST_OUT', 'VOLDIST', 'VOLDIST_TOTAL',
+    'VOLDIST_AJUSTADA_IN', 'VOLDIST_AJUSTADA_OUT', 'VOLDIST_AJUSTADA', 'VOLDIST_AJUSTADA_TOTAL',
+  ];
+  return prefixes.map(p => ({ oldToken: `${p}_${o}`, newToken: `${p}_${n}` }));
+}
+
+const GV_KEY_SUFFIXES = ['MES', 'PPTO_MES', 'PSDO_MES', 'ACUM', 'PPTO_ACUM', 'PSDO_ACUM'];
+
+/** Gastos Varios concept renamed → GV_* token pairs. */
+export function gvConceptoRenamePairs(
+  oldConcepto: string,
+  newConcepto: string,
+): { oldToken: string; newToken: string }[] {
+  if (!oldConcepto || !newConcepto || oldConcepto === newConcepto) return [];
+  // The GV token uses first 30 chars of sanitized concepto name (same as formulaVariables.ts)
+  const o = oldConcepto.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase().slice(0, 30);
+  const n = newConcepto.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase().slice(0, 30);
+  if (o === n) return [];
+  return GV_KEY_SUFFIXES.map(k => ({ oldToken: `GV_${o}_${k}`, newToken: `GV_${n}_${k}` }));
+}
+
 /** Costos row proceso or subproceso renamed → COSTOS_TOTAL_* token pairs. */
 export function costosRowRenamePairs(
   oldProceso: string,

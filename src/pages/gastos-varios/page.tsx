@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
+import { cascadeRenameTokens, gvConceptoRenamePairs } from '@/lib/formulaTokenRename';
 import type { GastoVarioFila, TipoFila } from '@/types/gastos_varios';
 import type { FormulaConfig } from '@/types/costos';
 import EstadoFinancieroTable from './components/EstadoFinancieroTable';
@@ -83,6 +84,13 @@ export default function GastosVariosPage() {
     field: string,
     value: string | number | null
   ) => {
+    // Cascade-rename GV_* tokens if concepto changes
+    if (field === 'concepto' && value !== null) {
+      const oldFila = filas.find(f => f.id === id);
+      if (oldFila && oldFila.concepto !== String(value)) {
+        cascadeRenameTokens(gvConceptoRenamePairs(oldFila.concepto, String(value)));
+      }
+    }
     setSavingId(id);
     setFilas(prev =>
       prev.map(f => {
