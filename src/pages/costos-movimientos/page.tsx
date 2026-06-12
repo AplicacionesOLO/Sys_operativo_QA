@@ -521,7 +521,7 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
     const derived = [
       'FIXED:idCompania', 'FIXED:codigo', 'FIXED:descripcion',
       'FIXED:movimientos', 'FIXED:pctMov', 'FIXED:unidades', 'FIXED:pctUnid',
-      'FIXED:promMovMes', 'FIXED:promUnidMes',
+      'FIXED:promMovMes', 'FIXED:promUnidMes', 'FIXED:pctPromMovMes', 'FIXED:pctPromUnidMes',
       ...mesesDisponibles.flatMap(m => [`MES:${m.mes}:mov`, `MES:${m.mes}:unid`]),
       ...zonaColumnas.map(c => c.id),
     ];
@@ -690,8 +690,10 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
       if (artSortKey === 'FIXED:movimientos') return (a.movimientos - b.movimientos) * dir;
       if (artSortKey === 'FIXED:unidades') return (a.unidades - b.unidades) * dir;
       if (artSortKey === 'FIXED:pctMov') return ((a.movimientos / Math.max(zoneTotalMov, 1)) - (b.movimientos / Math.max(zoneTotalMov, 1))) * dir;
-      if (artSortKey === 'FIXED:promMovMes') return (getArtPromedios(a.idCompania, a.articulo).promMov - getArtPromedios(b.idCompania, b.articulo).promMov) * dir;
-      if (artSortKey === 'FIXED:promUnidMes') return (getArtPromedios(a.idCompania, a.articulo).promUnid - getArtPromedios(b.idCompania, b.articulo).promUnid) * dir;
+      if (artSortKey === 'FIXED:promMovMes')    return (getArtPromedios(a.idCompania, a.articulo).promMov  - getArtPromedios(b.idCompania, b.articulo).promMov)  * dir;
+      if (artSortKey === 'FIXED:promUnidMes')   return (getArtPromedios(a.idCompania, a.articulo).promUnid - getArtPromedios(b.idCompania, b.articulo).promUnid) * dir;
+      if (artSortKey === 'FIXED:pctPromMovMes')  return ((sumAllPromMovArts  > 0 ? getArtPromedios(a.idCompania, a.articulo).promMov  / sumAllPromMovArts  : 0) - (sumAllPromMovArts  > 0 ? getArtPromedios(b.idCompania, b.articulo).promMov  / sumAllPromMovArts  : 0)) * dir;
+      if (artSortKey === 'FIXED:pctPromUnidMes') return ((sumAllPromUnidArts > 0 ? getArtPromedios(a.idCompania, a.articulo).promUnid / sumAllPromUnidArts : 0) - (sumAllPromUnidArts > 0 ? getArtPromedios(b.idCompania, b.articulo).promUnid / sumAllPromUnidArts : 0)) * dir;
       const colId = artSortKey;
       const va = computedCells[colId]?.[a.articulo]?.value ?? 0;
       const vb = computedCells[colId]?.[b.articulo]?.value ?? 0;
@@ -896,8 +898,8 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
                       {columnOrder.map(colKey => {
                         if (colKey.startsWith('FIXED:')) {
                           const key = colKey.slice(6);
-                          const headers: Record<string,string> = { idCompania:'Cía.', codigo:'Artículo', descripcion:'Descripción', movimientos:'Mov.', pctMov:'% Zona Mov.', unidades:'Cantidad', pctUnid:'% Zona Cant.', promMovMes:'Prom.Mov/Mes', promUnidMes:'Prom.Cant/Mes' };
-                          const sortable = ['movimientos','unidades','pctMov','promMovMes','promUnidMes'].includes(key);
+                          const headers: Record<string,string> = { idCompania:'Cía.', codigo:'Artículo', descripcion:'Descripción', movimientos:'Mov.', pctMov:'% Zona Mov.', unidades:'Cantidad', pctUnid:'% Zona Cant.', promMovMes:'Prom.Mov/Mes', promUnidMes:'Prom.Cant/Mes', pctPromMovMes:'% Prom.Mov/Mes', pctPromUnidMes:'% Prom.Cant/Mes' };
+                          const sortable = ['movimientos','unidades','pctMov','promMovMes','promUnidMes','pctPromMovMes','pctPromUnidMes'].includes(key);
                           return (
                             <SortableFixedHeader key={colKey} id={colKey} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 bg-slate-50">
                               {sortable ? <span onClick={() => toggleArtSort(`FIXED:${key}`)} className="cursor-pointer hover:text-slate-700 flex items-center gap-1">{headers[key] ?? key}<i className={`${sortIcon(`FIXED:${key}`)} ml-0.5`} /></span> : <span>{headers[key] ?? key}</span>}
@@ -949,8 +951,10 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
                               case 'pctMov':       return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><div className="flex items-center justify-end gap-2"><div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.min(artPctMov, 100)}%` }} /></div><span className="text-slate-500 w-10 text-right">{artPctMov.toFixed(2)}%</span></div></td>;
                               case 'unidades':     return <td key={colKey} className="px-3 py-2 text-right font-medium text-slate-700 border-r border-slate-100">{fmt(art.unidades)}</td>;
                               case 'pctUnid':      return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><div className="flex items-center justify-end gap-2"><div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{ width: `${Math.min(artPctUnid, 100)}%` }} /></div><span className="text-slate-500 w-10 text-right">{artPctUnid.toFixed(2)}%</span></div></td>;
-                              case 'promMovMes':   return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/30"><span className="text-slate-600 font-medium">{fmtDec(proms.promMov)}</span></td>;
-                              case 'promUnidMes':  return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/30"><span className="text-slate-700 font-semibold">{fmtDec(proms.promUnid)}</span></td>;
+                              case 'promMovMes':    return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/30"><div className="flex items-center justify-end gap-2" title={`${fmtDec(sumAllPromMovArts > 0 ? (proms.promMov / sumAllPromMovArts) * 100 : 0)}% del total`}><div className="w-10 h-1.5 bg-slate-100 rounded-full overflow-hidden flex-shrink-0"><div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.max(sumAllPromMovArts > 0 ? (proms.promMov / sumAllPromMovArts) * 100 : 0, 0.3)}%` }} /></div><span className="text-slate-600 font-medium w-10 text-right">{fmtDec(proms.promMov)}</span></div></td>;
+                              case 'promUnidMes':   return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/30"><div className="flex items-center justify-end gap-2" title={`${fmtDec(sumAllPromUnidArts > 0 ? (proms.promUnid / sumAllPromUnidArts) * 100 : 0)}% del total`}><div className="w-10 h-1.5 bg-slate-100 rounded-full overflow-hidden flex-shrink-0"><div className="h-full bg-indigo-400 rounded-full" style={{ width: `${Math.max(sumAllPromUnidArts > 0 ? (proms.promUnid / sumAllPromUnidArts) * 100 : 0, 0.3)}%` }} /></div><span className="text-slate-700 font-semibold w-10 text-right">{fmtDec(proms.promUnid)}</span></div></td>;
+                              case 'pctPromMovMes':  return <td key={colKey} className="px-2 py-2 text-right border-r border-slate-100 bg-emerald-50/20"><span className="text-emerald-700 font-medium text-xs">{fmtDec(sumAllPromMovArts  > 0 ? (proms.promMov  / sumAllPromMovArts)  * 100 : 0)}%</span></td>;
+                              case 'pctPromUnidMes': return <td key={colKey} className="px-2 py-2 text-right border-r border-slate-100 bg-rose-50/20"><span className="text-rose-700 font-medium text-xs">{fmtDec(sumAllPromUnidArts > 0 ? (proms.promUnid / sumAllPromUnidArts) * 100 : 0)}%</span></td>;
                               default: return null;
                             }
                           } else if (colKey.startsWith('MES:')) {
@@ -988,7 +992,11 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
                             case 'movimientos': return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{fmt(zoneFilteredMov)}</span></td>;
                             case 'pctMov': return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-indigo-600">100%</span></td>;
                             case 'unidades': return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{fmt(zoneFilteredUnid)}</span></td>;
-                            case 'pctUnid': return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-600">100%</span></td>;
+                            case 'pctUnid':        return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-600">100%</span></td>;
+                            case 'promMovMes':     return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/40"><span className="text-xs font-bold text-amber-700">{fmtDec(zoneFilteredArts.length > 0 ? zoneFilteredArts.reduce((s,a) => s + getArtPromedios(a.idCompania,a.articulo).promMov,  0) / zoneFilteredArts.length : 0)}</span></td>;
+                            case 'promUnidMes':    return <td key={colKey} className="px-3 py-2 text-right border-r border-slate-100 bg-amber-50/40"><span className="text-xs font-bold text-amber-700">{fmtDec(zoneFilteredArts.length > 0 ? zoneFilteredArts.reduce((s,a) => s + getArtPromedios(a.idCompania,a.articulo).promUnid, 0) / zoneFilteredArts.length : 0)}</span></td>;
+                            case 'pctPromMovMes':  return <td key={colKey} className="px-2 py-2 text-right border-r border-slate-100 bg-emerald-50/30"><span className="text-xs font-bold text-emerald-700">100%</span></td>;
+                            case 'pctPromUnidMes': return <td key={colKey} className="px-2 py-2 text-right border-r border-slate-100 bg-rose-50/30"><span className="text-xs font-bold text-rose-700">100%</span></td>;
                             default: return <td key={colKey} className="px-2 py-2 border-r border-slate-100" />;
                           }
                         } else if (colKey.startsWith('MES:')) {
