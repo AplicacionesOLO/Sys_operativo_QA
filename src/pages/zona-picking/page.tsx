@@ -33,7 +33,7 @@ interface PickingRow {
 interface ArticuloRow { id_articulo: string; descripcion: string; id_compania: string; compania: string; pct_picking: number; cant_max: number; cant_min: number; id_presentacion: string; auto_reponer: string; }
 interface ZonaColumna { id: string; zona: string; nombre: string; tipo: string; orden: number; formula?: string; }
 interface MasivoInfo { totalRegistros: number; headers: string[] }
-type Tab = 'resumen' | 'zonas' | 'datos';
+type Tab = 'resumen' | 'zonas' | 'distribucion' | 'datos';
 type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
 
 const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
@@ -540,6 +540,163 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
   );
 }
 
+// ── Tabla de Distribución Slot Prime — datos en crudo por artículo ───────────
+function TablaDistribucionSlotPrime() {
+  const [rows, setRows] = useState<Array<{ubicacion:string;id_articulo:string;descripcion:string;pct_picking:number;cant_max:number;cant_min:number;compania:string;zona_picking:string}>>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<'id_articulo'|'ubicacion'|'pct_picking'|'cant_max'|'zona_picking'>('zona_picking');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('asc');
+  const [page, setPage] = useState(0);
+  const [filterZona, setFilterZona] = useState('');
+  const PAGE = 200;
+
+  useEffect(() => {
+    setLoading(true);
+    // Load all raw article data using fn_picking_zona_detalle across all zones
+    supabase.from('zona_picking_raw')
+      .select('raw_data')
+      .range(0, 9999)
+      .then(({ data }) => {
+        const mapped = ((data ?? []) as any[]).map(r => {
+          const d = r.raw_data as Record<string, unknown>;
+          const toN = (v: unknown) => {
+            const s = String(v ?? '').trim();
+            if (!s) return 0;
+            const clean = s.replace(/[^0-9.-]/g, '');
+            return clean ? parseFloat(clean) : 0;
+          };
+          return {
+            ubicacion: String(d['Ubicación'] ?? ''),
+            id_articulo: String(d['Id Artículo'] ?? ''),
+            descripcion: String(d['Descripción'] ?? ''),
+            pct_picking: toN(d['% Picking']),
+            cant_max: toN(d['Cantidad Máxima']),
+            cant_min: toN(d['Cantidad Mínima']),
+            compania: String(d['Compañía'] ?? d['Id Compañía'] ?? ''),
+            zona_picking: String(d['Zona Picking'] ?? ''),
+          };
+        });
+        setRows(mapped);
+        setLoading(false);
+      });
+  }, []);
+
+  const zonas = useMemo(() => [...new Set(rows.map(r => r.zona_picking).filter(Boolean))].sort(), [rows]);
+
+  const filtered = useMemo(() => {
+    let r = rows;
+    if (filterZona) r = r.filter(x => x.zona_picking === filterZona);
+    if (search) {
+      const q = search.toLowerCase();
+      r = r.filter(x => x.id_articulo.toLowerCase().includes(q) || x.descripcion.toLowerCase().includes(q) || x.ubicacion.toLowerCase().includes(q) || x.compania.toLowerCase().includes(q));
+    }
+    return [...r].sort((a, b) => {
+      const dir = sortDir === 'asc' ? 1 : -1;
+      if (sortKey === 'pct_picking') return (a.pct_picking - b.pct_picking) * dir;
+      if (sortKey === 'cant_max') return (a.cant_max - b.cant_max) * dir;
+      return (String(a[sortKey]) < String(b[sortKey]) ? -1 : String(a[sortKey]) > String(b[sortKey]) ? 1 : 0) * dir;
+    });
+  }, [rows, filterZona, search, sortKey, sortDir]);
+
+  const totalPages = Math.ceil(filtered.length / PAGE);
+  const paged = filtered.slice(page * PAGE, (page + 1) * PAGE);
+  const toggleSort = (k: typeof sortKey) => { if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(k); setSortDir('asc'); } setPage(0); };
+  const si = (k: typeof sortKey) => sortKey !== k ? 'ri-expand-up-down-line text-slate-300' : sortDir === 'asc' ? 'ri-sort-asc text-slate-700' : 'ri-sort-desc text-slate-700';
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
+        <p className="text-sm font-semibold text-indigo-800">Tabla de Distribución Slot Prime</p>
+        <p className="text-xs text-indigo-500 mt-0.5">
+          Datos en crudo — un artículo por fila. Usa esta tabla para cruzar con la tabla de conteo por ubicación
+          (ej: Ubicación <code className="bg-indigo-100 px-1 rounded">RCL26-C027-N01-1</code> tiene 38 artículos → verifícalos aquí).
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        {/* Zone filter */}
+        <select value={filterZona} onChange={e => { setFilterZona(e.target.value); setPage(0); }}
+          className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 outline-none bg-white text-slate-700">
+          <option value="">Todas las zonas ({rows.length})</option>
+          {zonas.map(z => <option key={z} value={z}>{z}</option>)}
+        </select>
+        {/* Search */}
+        <div className="relative flex-1 min-w-[220px]">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i className="ri-search-line text-sm text-slate-400"/></div>
+          <input type="text" placeholder="Buscar artículo, descripción, ubicación..." value={search} onChange={e => { setSearch(e.target.value); setPage(0); }} className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 outline-none bg-white placeholder:text-slate-400"/>
+        </div>
+        <span className="text-xs text-slate-400 whitespace-nowrap">{filtered.length.toLocaleString('es-CO')} filas</span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12"><div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"/></div>
+      ) : (
+        <div className="border border-slate-200 rounded-lg overflow-auto max-h-[65vh]">
+          <table className="text-xs whitespace-nowrap w-full">
+            <thead>
+              <tr className="bg-slate-50 sticky top-0 z-10">
+                <th onClick={() => toggleSort('zona_picking')} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 cursor-pointer hover:bg-slate-100">Zona Picking <i className={si('zona_picking')}/></th>
+                <th onClick={() => toggleSort('ubicacion')} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 cursor-pointer hover:bg-slate-100">Ubicación <i className={si('ubicacion')}/></th>
+                <th onClick={() => toggleSort('id_articulo')} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 cursor-pointer hover:bg-slate-100">Id Artículo <i className={si('id_articulo')}/></th>
+                <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Descripción</th>
+                <th onClick={() => toggleSort('pct_picking')} className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200 cursor-pointer hover:bg-slate-100">% Pick. <i className={si('pct_picking')}/></th>
+                <th onClick={() => toggleSort('cant_max')} className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200 cursor-pointer hover:bg-slate-100">Cant. Máx. <i className={si('cant_max')}/></th>
+                <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Cant. Mín.</th>
+                <th className="px-3 py-2.5 text-left text-slate-500 font-semibold">Compañía</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paged.length === 0 ? (
+                <tr><td colSpan={8} className="px-3 py-10 text-center text-slate-400">{search || filterZona ? 'Sin resultados' : 'Sin datos'}</td></tr>
+              ) : paged.map((row, i) => (
+                <tr key={`${row.zona_picking}|${row.ubicacion}|${row.id_articulo}|${i}`} className={`border-t border-slate-100 hover:bg-indigo-50/40 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
+                  <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis" title={row.zona_picking}>{row.zona_picking || '—'}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] text-slate-700 border-r border-slate-100 font-medium">{row.ubicacion || '—'}</td>
+                  <td className="px-3 py-1.5 font-medium text-indigo-700 border-r border-slate-100">{row.id_articulo || '—'}</td>
+                  <td className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[260px] overflow-hidden text-ellipsis" title={row.descripcion}>{row.descripcion || '—'}</td>
+                  <td className="px-3 py-1.5 text-right border-r border-slate-100">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <div className="w-10 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{ width: `${Math.min(row.pct_picking, 100)}%` }}/></div>
+                      <span className="text-violet-700 font-semibold w-10 text-right">{fmtDec(row.pct_picking)}%</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-1.5 text-right text-slate-700 font-medium border-r border-slate-100">{row.cant_max.toLocaleString('es-CO')}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{row.cant_min.toLocaleString('es-CO')}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{row.compania || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+            {paged.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-100/80">
+                  <td className="px-3 py-2 font-semibold text-slate-600 text-xs" colSpan={2}>{filtered.length.toLocaleString('es-CO')} filas</td>
+                  <td colSpan={2} className="px-3 py-2 border-r border-slate-100"/>
+                  <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-700">{fmtDec(filtered.length > 0 ? filtered.reduce((s,r)=>s+r.pct_picking,0)/filtered.length : 0)}% prom.</span></td>
+                  <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{filtered.reduce((s,r)=>s+r.cant_max,0).toLocaleString('es-CO')}</span></td>
+                  <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-500">{filtered.reduce((s,r)=>s+r.cant_min,0).toLocaleString('es-CO')}</span></td>
+                  <td className="px-3 py-2"/>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="text-xs text-slate-400">{page*PAGE+1}–{Math.min((page+1)*PAGE,filtered.length)} de {filtered.length.toLocaleString('es-CO')}</span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setPage(p => Math.max(0, p-1))} disabled={page === 0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer"><i className="ri-arrow-left-s-line"/>Anterior</button>
+            <span className="text-xs text-slate-400 px-2">{page+1}/{totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages-1, p+1))} disabled={page >= totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer">Siguiente<i className="ri-arrow-right-s-line"/></button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Tabla de Variables — define constantes globales usables en fórmulas ───────
 function TablaVariables({ varColumnas, varColValues, formulaCtx, onReload }: {
   varColumnas: VarColumna[];
@@ -775,7 +932,7 @@ export default function CostoZonaPickingPage() {
           ):(
             <div className="px-6 py-4">
               <div className="flex gap-1 mb-4 flex-wrap">
-                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Picking'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
+                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Picking'},{id:'distribucion',icon:'ri-grid-line',label:'Distribución Slot Prime'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id as Tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${tab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                     <i className={`${t.icon} text-[11px]`}/>{t.label}
                   </button>
@@ -887,6 +1044,7 @@ export default function CostoZonaPickingPage() {
                 </div>
               )}
 
+              {tab==='distribucion'&&<TablaDistribucionSlotPrime/>}
               {tab==='datos'&&<RawTable headers={masivoInfo?.headers??[]}/>}
             </div>
           )}
