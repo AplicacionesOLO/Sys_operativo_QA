@@ -259,6 +259,80 @@ export function MovimientosRawTable({ headers }: { headers: string[] }) {
   );
 }
 
+// ── Cluster types ────────────────────────────────────────────────────────────
+
+export interface MovimientosCluster {
+  id: string;
+  nombre: string;
+  zonas: string[];
+  color: string;
+  orden: number;
+}
+
+// ── Multi-zone (cluster) hooks ────────────────────────────────────────────────
+
+export function useMovimientosClusterCompaniaResumen(zonas: string[]) {
+  const [data, setData] = useState<MovimientosZonaArticuloCompaniaRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!zonas.length) { setData(null); return; }
+    setLoading(true);
+    const PAGE = 1000;
+    let allRows: any[] = [];
+    let offset = 0;
+    while (true) {
+      const { data: page } = await supabase.rpc('fn_movimientos_zonas_compania_articulo', { p_zonas: zonas, p_offset: offset, p_limit: PAGE });
+      if (!page || page.length === 0) break;
+      allRows = allRows.concat(page);
+      if (page.length < PAGE) break;
+      offset += PAGE;
+    }
+    setData(allRows.map((r: any) => ({
+      zona: r.zona ?? 'CLUSTER',
+      idCompania: String(r.id_compania ?? ''),
+      articulo: String(r.articulo ?? ''),
+      descripcion: String(r.descripcion ?? ''),
+      movimientos: Number(r.movimientos) || 0,
+      unidades: Number(r.unidades) || 0,
+    })));
+    setLoading(false);
+  }, [JSON.stringify(zonas)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { load(); }, [load]);
+  return { data, loading, load };
+}
+
+export function useMovimientosClusterMensual(zonas: string[]) {
+  const [data, setData] = useState<MovimientosZonaArticuloMensualRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!zonas.length) { setData(null); return; }
+    setLoading(true);
+    const PAGE = 1000;
+    let allRows: any[] = [];
+    let offset = 0;
+    while (true) {
+      const { data: page } = await supabase.rpc('fn_movimientos_zonas_articulo_mensual', { p_zonas: zonas, p_offset: offset, p_limit: PAGE });
+      if (!page || page.length === 0) break;
+      allRows = allRows.concat(page);
+      if (page.length < PAGE) break;
+      offset += PAGE;
+    }
+    setData(allRows.map((r: any) => ({
+      zona: r.zona ?? 'CLUSTER', idCompania: String(r.id_compania ?? ''),
+      articulo: String(r.articulo ?? ''), descripcion: String(r.descripcion ?? ''),
+      mes: Number(r.mes) || 0, mes_nombre: String(r.mes_nombre ?? ''),
+      movimientos: Number(r.movimientos) || 0, unidades: Number(r.unidades) || 0,
+    })));
+    setLoading(false);
+  }, [JSON.stringify(zonas)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { load(); }, [load]);
+  return { data, loading, load };
+}
+
 // ── StatCard ──────────────────────────────────────────────────────────────────
 
 export function StatCard({ icon, iconColor, bg, label, value, sub }: { icon: string; iconColor: string; bg: string; label: string; value: string; sub: string }) {

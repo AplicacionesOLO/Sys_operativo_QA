@@ -10,12 +10,64 @@ interface ExcelUploadModalProps {
 
 type Step = 'select' | 'preview' | 'uploading' | 'done';
 
+const MESES_ES = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+/** Parse a date value (string or Excel serial) to {mes, anio} or null */
+function extractMonthYear(val: unknown): { mes: number; anio: number } | null {
+  if (val === null || val === undefined) return null;
+  const str = String(val).trim();
+  if (!str) return null;
+
+  // ISO: 2025-01-15 or 2025-1-5
+  let m = str.match(/^(\d{4})-(\d{1,2})/);
+  if (m) return { anio: parseInt(m[1]), mes: parseInt(m[2]) };
+
+  // DD/MM/YYYY with / or -
+  m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) {
+    const d1 = parseInt(m[1]), d2 = parseInt(m[2]), y = parseInt(m[3]);
+    // If first number > 12, it's day → DD/MM/YYYY
+    if (d1 > 12) return { anio: y, mes: d2 };
+    return { anio: y, mes: d1 }; // assume MM/DD/YYYY
+  }
+
+  // Excel numeric serial
+  const n = typeof val === 'number' ? val : (str.match(/^\d+$/) ? parseInt(str) : NaN);
+  if (!isNaN(n) && n > 40000 && n < 60000) {
+    const d = new Date((n - 25569) * 86400 * 1000);
+    return { anio: d.getUTCFullYear(), mes: d.getUTCMonth() + 1 };
+  }
+
+  // Generic date parse
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return { anio: d.getFullYear(), mes: d.getMonth() + 1 };
+
+  return null;
+}
+
+/** Extract unique {mes, anio} pairs from all batches using Fecha Generación column */
+function detectMonthYears(batches: Record<string, unknown>[][]): { mes: number; anio: number }[] {
+  const seen = new Map<string, { mes: number; anio: number }>();
+  for (const batch of batches) {
+    for (const row of batch) {
+      const my = extractMonthYear(row['Fecha Generación']);
+      if (my) {
+        const key = `${my.anio}-${my.mes}`;
+        if (!seen.has(key)) seen.set(key, my);
+      }
+    }
+  }
+  return Array.from(seen.values()).sort((a, b) => a.anio !== b.anio ? a.anio - b.anio : a.mes - b.mes);
+}
+
 export default function MovimientosExcelUploadModal({ onClose, onSuccess }: ExcelUploadModalProps) {
   const [step, setStep] = useState<Step>('select');
   const [dragging, setDragging] = useState(false);
   const [parsed, setParsed] = useState<MasivoParseResult | null>(null);
   const [fileName, setFileName] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [detectedMonths, setDetectedMonths] = useState<{ mes: number; anio: number }[]>([]);
+  const [uploadProgress, setUploadProgress] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const processFile = useCallback(async (file: File) => {
@@ -25,7 +77,11 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
     }
     setFileName(file.name);
     const buffer = await file.arrayBuffer();
-    setParsed(parseMovimientosMasivoExcel(buffer));
+    const result = parseMovimientosMasivoExcel(buffer);
+    setParsed(result);
+    if (result.batches.length > 0) {
+      setDetectedMonths(detectMonthYears(result.batches));
+    }
     setStep('preview');
   }, []);
 
@@ -44,10 +100,25 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
     if (!parsed || parsed.errors.length > 0 || parsed.totalRows === 0) return;
     setStep('uploading'); setUploadError('');
     try {
-      // Clear existing data first
-      await supabase.from('costos_movimientos_raw').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      // Step 1: Delete existing records for the same month+year combinations
+      if (detectedMonths.length > 0) {
+        setUploadProgress('Eliminando registros existentes de los mismos meses...');
+        for (const { mes, anio } of detectedMonths) {
+          await supabase.from('costos_movimientos_raw')
+            .delete()
+            .eq('mes', mes)
+            .eq('anio', anio);
+        }
+      }
+
+      // Step 2: Insert new records with mes+anio populated
       for (let i = 0; i < parsed.batches.length; i++) {
-        const { error } = await supabase.from('costos_movimientos_raw').insert(parsed.batches[i].map(rawData => ({ raw_data: rawData })));
+        setUploadProgress(`Subiendo lote ${i + 1} de ${parsed.batches.length}...`);
+        const rows = parsed.batches[i].map(rawData => {
+          const my = extractMonthYear(rawData['Fecha Generación']);
+          return { raw_data: rawData, mes: my?.mes ?? null, anio: my?.anio ?? null };
+        });
+        const { error } = await supabase.from('costos_movimientos_raw').insert(rows);
         if (error) throw new Error(`Error en lote ${i + 1}: ${error.message}`);
       }
       setStep('done');
@@ -64,10 +135,10 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
       <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <div>
-            <h2 className="text-base font-semibold text-slate-800">Cargar datos masivos — Costos Movimientos</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Carga el archivo Excel tal cual. Las columnas clave son: Zona Almacenaje, Artículo, Cantidad, Id Compañía.</p>
+            <h2 className="text-base font-semibold text-slate-800">Cargar datos — Costos Movimientos</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Los datos se acumulan por mes. Si ya existen datos del mismo mes+año, se reemplazarán.</p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 cursor-pointer">
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer">
             <i className="ri-close-line text-lg" />
           </button>
         </div>
@@ -99,14 +170,16 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
                   <span className="text-sm text-slate-600 truncate">{fileName}</span>
                 </div>
               )}
+
               {hasErrors && (
                 <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
                   {parsed?.errors.map((e, i) => <p key={i} className="text-xs text-rose-600">{e}</p>)}
-                  {parsed?.totalRows === 0 && <p className="text-xs text-rose-600">No se encontraron filas de datos válidas.</p>}
                 </div>
               )}
+
               {!hasErrors && parsed && (
-                <div className="space-y-3">
+                <div className="space-y-4">
+                  {/* Stats */}
                   <div className="grid grid-cols-3 gap-3">
                     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
                       <p className="text-xl font-bold text-slate-700">{parsed.totalRows.toLocaleString('es-CO')}</p>
@@ -121,37 +194,56 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
                       <p className="text-xs text-amber-600 mt-0.5">Lotes (×1000)</p>
                     </div>
                   </div>
-                  <div>
-                    <p className="text-xs font-medium text-slate-500 mb-1.5">Columnas detectadas ({parsed.headers.length})</p>
-                    <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
-                      {parsed.headers.map(h => <span key={h} className={`px-2 py-0.5 text-xs rounded-full whitespace-nowrap ${['Zona Almacenaje','Artículo','Cantidad','Id Compañía','Fecha Generación','DESCRIPCIONLARGA'].includes(h) ? 'bg-indigo-100 text-indigo-700 font-medium' : 'bg-slate-100 text-slate-600'}`}>{h}</span>)}
+
+                  {/* Detected months */}
+                  {detectedMonths.length > 0 && (
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3">
+                      <p className="text-xs font-semibold text-indigo-800 mb-2 flex items-center gap-1.5">
+                        <i className="ri-calendar-check-line" />
+                        Meses detectados en este archivo ({detectedMonths.length})
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {detectedMonths.map(({ mes, anio }) => (
+                          <span key={`${anio}-${mes}`} className="px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 text-xs rounded-full font-medium">
+                            {MESES_ES[mes]} {anio}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-indigo-600 mt-2 flex items-center gap-1">
+                        <i className="ri-information-line" />
+                        Si ya existen datos de estos meses, serán reemplazados. El resto de meses no se toca.
+                      </p>
                     </div>
-                    <p className="text-[10px] text-indigo-600 mt-1.5">Las columnas en azul son clave para el análisis por zona.</p>
-                  </div>
+                  )}
+
+                  {detectedMonths.length === 0 && parsed.headers.includes('Fecha Generación') && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-start gap-2">
+                      <i className="ri-alert-line text-amber-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-xs text-amber-700">No se detectaron fechas válidas en la columna <strong>Fecha Generación</strong>. Los datos se cargarán sin deduplicación por mes.</p>
+                    </div>
+                  )}
+
+                  {/* Preview table */}
                   <div>
-                    <p className="text-xs font-medium text-slate-500 mb-1.5">Vista previa — {parsed.previewRows.length} de {parsed.totalRows.toLocaleString('es-CO')} filas</p>
-                    <div className="border border-slate-200 rounded-lg overflow-auto max-h-[280px]">
+                    <p className="text-xs font-medium text-slate-500 mb-1.5">Vista previa — primeras {parsed.previewRows.length} filas</p>
+                    <div className="border border-slate-200 rounded-lg overflow-auto max-h-[260px]">
                       <table className="text-xs whitespace-nowrap">
                         <thead>
                           <tr className="bg-slate-100 sticky top-0">
                             <th className="px-3 py-2 text-left text-slate-500 border-r border-slate-200">#</th>
-                            {parsed.headers.map(h => <th key={h} className="px-3 py-2 text-left text-slate-500 border-r border-slate-200 max-w-[180px] overflow-hidden text-ellipsis">{h}</th>)}
+                            {parsed.headers.map(h => <th key={h} className={`px-3 py-2 text-left border-r border-slate-200 max-w-[160px] overflow-hidden text-ellipsis ${['Zona Almacenaje','Artículo','Cantidad','Id Compañía','Fecha Generación'].includes(h) ? 'text-indigo-600 font-semibold' : 'text-slate-500'}`}>{h}</th>)}
                           </tr>
                         </thead>
                         <tbody>
                           {parsed.previewRows.map((row, i) => (
                             <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                               <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100 text-center">{i + 1}</td>
-                              {parsed.headers.map(h => <td key={h} className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[180px] overflow-hidden text-ellipsis">{row[h] !== null && row[h] !== undefined ? String(row[h]) : '—'}</td>)}
+                              {parsed.headers.map(h => <td key={h} className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis">{row[h] !== null && row[h] !== undefined ? String(row[h]) : '—'}</td>)}
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                  </div>
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-start gap-3">
-                    <i className="ri-alert-line text-amber-500 mt-0.5 flex-shrink-0" />
-                    <p className="text-xs text-amber-700"><strong>Importante:</strong> Esta carga <strong>reemplazará todos los datos anteriores</strong> de Costos Movimientos.</p>
                   </div>
                 </div>
               )}
@@ -162,8 +254,8 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
           {step === 'uploading' && (
             <div className="flex flex-col items-center gap-4 py-8">
               <div className="w-12 h-12 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-slate-600">Guardando datos...</p>
-              <p className="text-xs text-slate-400">Subiendo {parsed?.batches.length ?? 0} lotes de hasta 1.000 filas</p>
+              <p className="text-sm text-slate-600">Procesando datos...</p>
+              {uploadProgress && <p className="text-xs text-slate-400 text-center max-w-xs">{uploadProgress}</p>}
             </div>
           )}
 
@@ -175,6 +267,11 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
               <div className="text-center">
                 <p className="text-sm font-semibold text-slate-800">Datos cargados correctamente</p>
                 <p className="text-xs text-slate-400 mt-1">{parsed?.totalRows.toLocaleString('es-CO') ?? 0} filas guardadas.</p>
+                {detectedMonths.length > 0 && (
+                  <p className="text-xs text-indigo-600 mt-1">
+                    Meses actualizados: {detectedMonths.map(m => `${MESES_ES[m.mes]} ${m.anio}`).join(', ')}
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -190,7 +287,7 @@ export default function MovimientosExcelUploadModal({ onClose, onSuccess }: Exce
           )}
           {step === 'preview' && (
             <>
-              <button onClick={() => { setParsed(null); setFileName(''); setUploadError(''); setStep('select'); }} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer whitespace-nowrap">Cambiar archivo</button>
+              <button onClick={() => { setParsed(null); setFileName(''); setUploadError(''); setDetectedMonths([]); setStep('select'); }} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer whitespace-nowrap">Cambiar archivo</button>
               <button disabled={hasErrors} onClick={handleUpload} className="px-5 py-2 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 text-white text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap">Confirmar y subir</button>
             </>
           )}

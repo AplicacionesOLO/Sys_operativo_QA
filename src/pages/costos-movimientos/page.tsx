@@ -17,8 +17,10 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   useMovimientosMasivoResumen, useMovimientosArticuloResumen,
   useMovimientosZonaCompaniaResumen, useMovimientosZonaArticuloMensual,
+  useMovimientosClusterCompaniaResumen, useMovimientosClusterMensual,
   MovimientosRawTable, StatCard,
   type ArticuloResumenRow, type ZonaResumenRow, type ZonaArticuloCompaniaRow,
+  type MovimientosCluster,
 } from './components/MasivoHooks';
 import ExportMenu from '@/components/base/ExportMenu';
 import type { MovimientosZonaColumnaDinamica } from '@/types/costos_movimientos';
@@ -29,8 +31,10 @@ import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
 export default function CostosMovimientosPage() {
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [formulaCtx, setFormulaCtx] = useState<FormulaContext>(EMPTY_FORMULA_CTX);
   const [tab, setTab] = useState<'resumen' | 'articulos' | 'zonas' | 'datos'>('resumen');
+  const [clusters, setClusters] = useState<MovimientosCluster[]>([]);
 
   const { data: masivoData, load: loadMasivo } = useMovimientosMasivoResumen();
   const { data: resumenCompleto, loading: resumenLoading, load: loadResumen } = useMovimientosArticuloResumen();
@@ -93,7 +97,22 @@ export default function CostosMovimientosPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); loadMasivo(); }, [loadData, loadMasivo]);
+  const loadClusters = useCallback(async () => {
+    const { data } = await supabase.from('costos_movimientos_clusters').select('*').order('orden');
+    setClusters((data ?? []) as MovimientosCluster[]);
+  }, []);
+
+  useEffect(() => { loadData(); loadMasivo(); loadClusters(); }, [loadData, loadMasivo, loadClusters]);
+
+  const handleClearAll = async () => {
+    if (!confirm('¿Eliminar TODOS los datos cargados de Costos Movimientos? Esta acción no se puede deshacer.')) return;
+    setClearing(true);
+    await supabase.from('costos_movimientos_raw').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    setClearing(false);
+    loadMasivo();
+    // Reset resumen
+    window.location.reload();
+  };
 
   useEffect(() => {
     if ((tab === 'articulos' || tab === 'zonas') && !resumenCompleto && hasMasivo) {
@@ -122,9 +141,15 @@ export default function CostosMovimientosPage() {
       subtitle="Análisis de movimientos por zona (Zona Almacenaje) · %zona% por artículo"
       actions={
         <div className="flex items-center gap-2">
+          {hasMasivo && (
+            <button onClick={handleClearAll} disabled={clearing} className="flex items-center gap-2 px-4 py-2 border border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50">
+              <i className="ri-delete-bin-line" />
+              {clearing ? 'Limpiando...' : 'Limpiar todo'}
+            </button>
+          )}
           <button onClick={() => setShowUpload(true)} className="flex items-center gap-2 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
             <div className="w-4 h-4 flex items-center justify-center"><i className="ri-file-excel-2-line" /></div>
-            Cargar Excel masivo
+            Cargar Excel
           </button>
         </div>
       }
@@ -163,7 +188,7 @@ export default function CostosMovimientosPage() {
 
               {tab === 'resumen'   && <ResumenTab data={masivoData!} />}
               {tab === 'articulos' && <ArticuloResumenTable data={resumenCompleto?.articulos} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovArticulos, totalUnid: resumenCompleto.totalUnidArticulos, totalCount: resumenCompleto.totalArticulos } : undefined} />}
-              {tab === 'zonas'     && <ZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovZonas, totalUnid: resumenCompleto.totalUnidZonas, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} />}
+              {tab === 'zonas'     && <ZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovZonas, totalUnid: resumenCompleto.totalUnidZonas, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} clusters={clusters} onClustersChange={loadClusters} />}
               {tab === 'datos'     && <MovimientosRawTable headers={masivoData!.headers} />}
             </div>
           )}
@@ -292,12 +317,130 @@ function ArticuloResumenTable({ data, loading, globalTotals }: { data?: Articulo
 
 // ── Zona Resumen Table ────────────────────────────────────────────────────────
 
-function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: ZonaResumenRow[]; loading: boolean; globalTotals?: { totalMov: number; totalUnid: number; totalCount: number }; formulaCtx: FormulaContext }) {
+// ── Cluster Manager ───────────────────────────────────────────────────────────
+
+function ClusterManager({ clusters, zonas, onChanged }: { clusters: MovimientosCluster[]; zonas: string[]; onChanged: () => void }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [nombre, setNombre] = useState('');
+  const [color, setColor] = useState('indigo');
+  const [selectedZonas, setSelectedZonas] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const COLORS = ['indigo','violet','sky','teal','emerald','amber','rose','orange'];
+
+  const openNew = () => { setEditId(null); setNombre(''); setColor('indigo'); setSelectedZonas([]); setShowForm(true); };
+  const openEdit = (c: MovimientosCluster) => { setEditId(c.id); setNombre(c.nombre); setColor(c.color); setSelectedZonas([...c.zonas]); setShowForm(true); };
+  const toggleZona = (z: string) => setSelectedZonas(prev => prev.includes(z) ? prev.filter(x => x !== z) : [...prev, z]);
+
+  const handleSave = async () => {
+    if (!nombre.trim() || selectedZonas.length === 0) return;
+    setSaving(true);
+    if (editId) {
+      await supabase.from('costos_movimientos_clusters').update({ nombre: nombre.trim(), zonas: selectedZonas, color, updated_at: new Date().toISOString() } as any).eq('id', editId);
+    } else {
+      await supabase.from('costos_movimientos_clusters').insert({ nombre: nombre.trim(), zonas: selectedZonas, color, orden: clusters.length });
+    }
+    setSaving(false); setShowForm(false); onChanged();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('¿Eliminar este cluster?')) return;
+    await supabase.from('costos_movimientos_clusters').delete().eq('id', id);
+    onChanged();
+  };
+
+  const colorClass = (c: string, active = false) => {
+    const map: Record<string, string> = { indigo: active ? 'bg-indigo-500 text-white' : 'bg-indigo-100 text-indigo-700', violet: active ? 'bg-violet-500 text-white' : 'bg-violet-100 text-violet-700', sky: active ? 'bg-sky-500 text-white' : 'bg-sky-100 text-sky-700', teal: active ? 'bg-teal-500 text-white' : 'bg-teal-100 text-teal-700', emerald: active ? 'bg-emerald-500 text-white' : 'bg-emerald-100 text-emerald-700', amber: active ? 'bg-amber-500 text-white' : 'bg-amber-100 text-amber-700', rose: active ? 'bg-rose-500 text-white' : 'bg-rose-100 text-rose-700', orange: active ? 'bg-orange-500 text-white' : 'bg-orange-100 text-orange-700' };
+    return map[c] ?? map['indigo'];
+  };
+
+  const usedZonas = new Set(clusters.flatMap(c => c.zonas));
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-700">Clusters de Zonas</p>
+          <p className="text-xs text-slate-400 mt-0.5">Agrupa zonas para analizarlas como una sola unidad</p>
+        </div>
+        <button onClick={openNew} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+          <i className="ri-add-line" /> Nuevo cluster
+        </button>
+      </div>
+
+      {clusters.length === 0 && !showForm && (
+        <p className="text-xs text-slate-400 italic py-2 text-center">Sin clusters. Crea uno para agrupar zonas.</p>
+      )}
+
+      {clusters.map(c => (
+        <div key={c.id} className="bg-white border border-slate-200 rounded-lg px-3 py-2.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${colorClass(c.color, true)}`}>{c.nombre}</span>
+            <div className="flex flex-wrap gap-1">
+              {c.zonas.map(z => <span key={z} className="px-1.5 py-0.5 bg-slate-100 text-slate-600 text-xs rounded border border-slate-200">{z}</span>)}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={() => openEdit(c)} className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 cursor-pointer"><i className="ri-pencil-line text-xs" /></button>
+            <button onClick={() => handleDelete(c.id)} className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50 cursor-pointer"><i className="ri-delete-bin-line text-xs" /></button>
+          </div>
+        </div>
+      ))}
+
+      {showForm && (
+        <div className="bg-white border border-indigo-200 rounded-lg p-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">{editId ? 'Editar cluster' : 'Nuevo cluster'}</p>
+          <div className="flex gap-3">
+            <input type="text" value={nombre} onChange={e => setNombre(e.target.value)} placeholder="Nombre del cluster (ej: Pesado)" className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 outline-none" />
+            <div className="flex gap-1">
+              {COLORS.map(c => (
+                <button key={c} onClick={() => setColor(c)} className={`w-7 h-7 rounded-full border-2 transition-all cursor-pointer ${colorClass(c, true)} ${color === c ? 'border-slate-800 scale-110' : 'border-transparent'}`} title={c} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-slate-500 mb-2">Seleccionar zonas para este cluster:</p>
+            <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+              {zonas.map(z => {
+                const inOther = usedZonas.has(z) && !selectedZonas.includes(z);
+                return (
+                  <button key={z} onClick={() => !inOther && toggleZona(z)} disabled={inOther} className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer whitespace-nowrap ${selectedZonas.includes(z) ? `${colorClass(color, true)} border-transparent` : inOther ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
+                    {z}
+                    {inOther && <span className="ml-1 text-[10px]">(en uso)</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedZonas.length > 0 && <p className="text-xs text-indigo-600 mt-1.5">{selectedZonas.length} zona(s) seleccionada(s): {selectedZonas.join(', ')}</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer">Cancelar</button>
+            <button onClick={handleSave} disabled={!nombre.trim() || selectedZonas.length === 0 || saving} className="px-4 py-1.5 text-xs bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 text-white font-medium rounded-lg cursor-pointer">
+              {saving ? 'Guardando...' : editId ? 'Actualizar' : 'Crear cluster'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ZonaResumenTable ──────────────────────────────────────────────────────────
+
+type ActiveSelection =
+  | { type: 'zone'; zona: string }
+  | { type: 'cluster'; cluster: MovimientosCluster };
+
+function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, onClustersChange }: { data?: ZonaResumenRow[]; loading: boolean; globalTotals?: { totalMov: number; totalUnid: number; totalCount: number }; formulaCtx: FormulaContext; clusters: MovimientosCluster[]; onClustersChange: () => void }) {
   const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
   const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
   const rows = data ?? [];
-  const [activeZone, setActiveZone] = useState<string>(rows[0]?.zona ?? '');
+  const [activeSelection, setActiveSelection] = useState<ActiveSelection>(
+    rows[0] ? { type: 'zone', zona: rows[0].zona } : { type: 'zone', zona: '' }
+  );
+  const [showClusterManager, setShowClusterManager] = useState(false);
   const [search, setSearch] = useState('');
   const [artPage, setArtPage] = useState(0);
   const [artSortKey, setArtSortKey] = useState<string>('FIXED:movimientos');
@@ -305,8 +448,24 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
   const [, startTransition] = useTransition();
   const deferredSearch = useDeferredValue(search);
 
-  const { data: companiaData, loading: companiaLoading } = useMovimientosZonaCompaniaResumen(activeZone);
-  const { data: articuloMensualData } = useMovimientosZonaArticuloMensual(activeZone);
+  const isCluster = activeSelection.type === 'cluster';
+  const activeZone = activeSelection.type === 'zone' ? activeSelection.zona : '';
+  const activeCluster = activeSelection.type === 'cluster' ? activeSelection.cluster : null;
+  const activeClusterZonas = activeCluster?.zonas ?? [];
+
+  const { data: companiaDataZone,  loading: companiaLoadingZone  } = useMovimientosZonaCompaniaResumen(activeZone);
+  const { data: mensualDataZone }  = useMovimientosZonaArticuloMensual(activeZone);
+  const { data: companiaDataCluster, loading: companiaLoadingCluster } = useMovimientosClusterCompaniaResumen(activeClusterZonas);
+  const { data: mensualDataCluster } = useMovimientosClusterMensual(activeClusterZonas);
+
+  const companiaData    = isCluster ? companiaDataCluster  : companiaDataZone;
+  const articuloMensualData = isCluster ? mensualDataCluster : mensualDataZone;
+  const companiaLoading = isCluster ? companiaLoadingCluster : companiaLoadingZone;
+
+  // Zones not belonging to any cluster
+  const allZoneNames = rows.map(r => r.zona);
+  const clusteredZones = new Set(clusters.flatMap(c => c.zonas));
+  const unclusteredZones = allZoneNames.filter(z => !clusteredZones.has(z));
 
   const [zonaColumnas, setZonaColumnas] = useState<MovimientosZonaColumnaDinamica[]>([]);
   const [celdasFormulas, setCeldasFormulas] = useState<Record<string, any[]>>({});
@@ -366,12 +525,20 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
     return derived;
   }, [colOrder, mesesDisponibles, zonaColumnas]);
 
-  const switchZone = useCallback((zona: string) => {
-    if (zona === activeZone) return;
+  const switchToZone = useCallback((zona: string) => {
     setSearch(''); setArtPage(0);
     setArtSortKey('FIXED:movimientos'); setArtSortDir('desc');
-    startTransition(() => setActiveZone(zona));
-  }, [activeZone]);
+    startTransition(() => setActiveSelection({ type: 'zone', zona }));
+  }, []);
+
+  const switchToCluster = useCallback((cluster: MovimientosCluster) => {
+    setSearch(''); setArtPage(0);
+    setArtSortKey('FIXED:movimientos'); setArtSortDir('desc');
+    startTransition(() => setActiveSelection({ type: 'cluster', cluster }));
+  }, []);
+
+  // Load dynamic columns for the active zone/cluster label
+  const colsKey = isCluster ? (activeCluster?.id ?? '') : activeZone;
 
   const loadZonaColumnas = useCallback(async (zona: string) => {
     setColLoading(true); setColOrder([]);
@@ -392,7 +559,10 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
     setColLoading(false);
   }, []);
 
-  useEffect(() => { if (activeZone) loadZonaColumnas(activeZone); }, [activeZone, loadZonaColumnas]);
+  useEffect(() => {
+    const key = isCluster ? `_cluster_${activeCluster?.id ?? ''}` : activeZone;
+    if (key && key !== '_cluster_') loadZonaColumnas(key);
+  }, [colsKey, loadZonaColumnas, isCluster, activeCluster, activeZone]);
 
   // System variable map for formula editor
   const systemVarDefs = useMemo((): VariableDef[] => {
@@ -405,10 +575,12 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
     try { return buildVariableMap(systemVarDefs, toAllDataSources(formulaCtx)); } catch { return {}; }
   }, [formulaCtx, systemVarDefs]);
 
-  // Computed zone stats
+  // Computed zone/cluster stats
   const activeZoneRow = rows.find(r => r.zona === activeZone);
-  const zoneTotalMov  = activeZoneRow?.movimientos ?? 0;
-  const zoneTotalUnid = activeZoneRow?.unidades ?? 0;
+  const clusterTotalMov  = isCluster ? rows.filter(r => activeClusterZonas.includes(r.zona)).reduce((s, r) => s + r.movimientos, 0) : 0;
+  const clusterTotalUnid = isCluster ? rows.filter(r => activeClusterZonas.includes(r.zona)).reduce((s, r) => s + r.unidades, 0) : 0;
+  const zoneTotalMov  = isCluster ? clusterTotalMov  : (activeZoneRow?.movimientos ?? 0);
+  const zoneTotalUnid = isCluster ? clusterTotalUnid : (activeZoneRow?.unidades    ?? 0);
 
   const sumAllPromMovArts  = useMemo(() => activeZoneArtsAll.reduce((s, a) => s + getArtPromedios(a.idCompania, a.articulo).promMov, 0), [activeZoneArtsAll, getArtPromedios]);
   const sumAllPromUnidArts = useMemo(() => activeZoneArtsAll.reduce((s, a) => s + getArtPromedios(a.idCompania, a.articulo).promUnid, 0), [activeZoneArtsAll, getArtPromedios]);
@@ -545,10 +717,11 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
     setColOrder(next);
   }, [columnOrder]);
 
+  const ZONE_COLORS = ['bg-indigo-500','bg-violet-500','bg-sky-500','bg-teal-500','bg-amber-500','bg-rose-500','bg-emerald-500','bg-orange-500'];
+  const clusterColorMap: Record<string,string> = { indigo:'bg-indigo-500', violet:'bg-violet-500', sky:'bg-sky-500', teal:'bg-teal-500', emerald:'bg-emerald-500', amber:'bg-amber-500', rose:'bg-rose-500', orange:'bg-orange-500' };
+
   if (loading) return <div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" /></div>;
   if (rows.length === 0) return <div className="flex items-center justify-center py-16"><p className="text-sm text-slate-400">No hay datos de zonas disponibles.</p></div>;
-
-  const ZONE_COLORS = ['bg-indigo-500','bg-violet-500','bg-sky-500','bg-teal-500','bg-amber-500','bg-rose-500','bg-emerald-500','bg-orange-500'];
 
   return (
     <div className="space-y-4">
@@ -559,30 +732,77 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
         <div className="bg-sky-50 rounded-lg px-4 py-3 border border-sky-100"><p className="text-xs text-sky-600 font-medium">Total cant. global</p><p className="text-lg font-bold text-sky-700">{fmt(totalUnid)}</p></div>
       </div>
 
-      {/* Zone tabs */}
+      {/* Cluster manager toggle */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500">Selecciona una zona o cluster para ver el desglose por artículo</p>
+        <button onClick={() => setShowClusterManager(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+          <i className={`ri-settings-${showClusterManager ? 'fill' : '2-line'} text-sm`} />
+          {showClusterManager ? 'Ocultar clusters' : 'Gestionar clusters'}
+          {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+        </button>
+      </div>
+
+      {showClusterManager && (
+        <ClusterManager clusters={clusters} zonas={allZoneNames} onChanged={onClustersChange} />
+      )}
+
+      {/* Tabs: clusters first, then unclustered zones */}
       <div className="flex gap-1.5 flex-wrap">
-        {rows.map((zone, zi) => {
-          const isActive = zone.zona === activeZone;
-          const pct = totalMov > 0 ? (zone.movimientos / totalMov) * 100 : 0;
+        {/* Cluster tabs */}
+        {clusters.map(cluster => {
+          const isActive = activeSelection.type === 'cluster' && activeSelection.cluster.id === cluster.id;
+          const clusterMov = rows.filter(r => cluster.zonas.includes(r.zona)).reduce((s, r) => s + r.movimientos, 0);
+          const pct = totalMov > 0 ? (clusterMov / totalMov) * 100 : 0;
+          const dotBg = clusterColorMap[cluster.color] ?? 'bg-indigo-500';
+          return (
+            <button key={cluster.id} onClick={() => switchToCluster(cluster)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 border ${isActive ? `${dotBg} text-white border-transparent shadow-sm` : 'bg-white text-slate-700 border-slate-300 hover:border-indigo-300 hover:bg-indigo-50'}`}>
+              <i className={`ri-stack-line text-xs ${isActive ? 'text-white/80' : 'text-slate-400'}`} />
+              {cluster.nombre}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${isActive ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-700'}`}>{pct.toFixed(1)}%</span>
+              <span className={`text-[10px] ${isActive ? 'text-white/60' : 'text-slate-400'}`}>({cluster.zonas.length} zonas)</span>
+            </button>
+          );
+        })}
+
+        {/* Separator if both clusters and zones */}
+        {clusters.length > 0 && unclusteredZones.length > 0 && (
+          <div className="flex items-center px-1"><div className="h-5 w-px bg-slate-200" /></div>
+        )}
+
+        {/* Individual unclustered zone tabs */}
+        {unclusteredZones.map((zona, zi) => {
+          const zone = rows.find(r => r.zona === zona);
+          const isActive = activeSelection.type === 'zone' && activeSelection.zona === zona;
+          const pct = totalMov > 0 && zone ? (zone.movimientos / totalMov) * 100 : 0;
           const dotColor = ZONE_COLORS[zi % ZONE_COLORS.length];
           return (
-            <button key={zone.zona} onClick={() => switchZone(zone.zona)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 border ${isActive ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
+            <button key={zona} onClick={() => switchToZone(zona)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 border ${isActive ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
               <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-white/70' : dotColor}`} />
-              {zone.zona}
+              {zona}
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{pct.toFixed(1)}%</span>
             </button>
           );
         })}
       </div>
 
-      {/* Active zone stats */}
-      {activeZoneRow && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-white border border-indigo-100 rounded-lg px-4 py-3"><p className="text-xs text-slate-500">Movimientos en zona</p><p className="text-base font-bold text-indigo-700">{fmt(activeZoneRow.movimientos)}</p><p className="text-xs text-slate-400">{totalMov > 0 ? ((activeZoneRow.movimientos/totalMov)*100).toFixed(2) : 0}% del total</p></div>
-          <div className="bg-white border border-sky-100 rounded-lg px-4 py-3"><p className="text-xs text-slate-500">Cantidad en zona</p><p className="text-base font-bold text-sky-700">{fmt(activeZoneRow.unidades)}</p><p className="text-xs text-slate-400">{totalUnid > 0 ? ((activeZoneRow.unidades/totalUnid)*100).toFixed(2) : 0}% del total</p></div>
-          <div className="bg-white border border-violet-100 rounded-lg px-4 py-3"><p className="text-xs text-slate-500">Artículos distintos</p><p className="text-base font-bold text-violet-700">{fmt(activeZoneRow.articulos_distintos)}</p><p className="text-xs text-slate-400">{activeZoneArtsAll.length} compañía-artículo</p></div>
+      {/* Active stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white border border-indigo-100 rounded-lg px-4 py-3">
+          <p className="text-xs text-slate-500">{isCluster ? `Movimientos en cluster "${activeCluster?.nombre}"` : `Movimientos en zona`}</p>
+          <p className="text-base font-bold text-indigo-700">{fmt(zoneTotalMov)}</p>
+          <p className="text-xs text-slate-400">{totalMov > 0 ? ((zoneTotalMov/totalMov)*100).toFixed(2) : 0}% del total</p>
         </div>
-      )}
+        <div className="bg-white border border-sky-100 rounded-lg px-4 py-3">
+          <p className="text-xs text-slate-500">Cantidad (abs)</p>
+          <p className="text-base font-bold text-sky-700">{fmt(zoneTotalUnid)}</p>
+          <p className="text-xs text-slate-400">{totalUnid > 0 ? ((zoneTotalUnid/totalUnid)*100).toFixed(2) : 0}% del total</p>
+        </div>
+        <div className="bg-white border border-violet-100 rounded-lg px-4 py-3">
+          <p className="text-xs text-slate-500">{isCluster ? 'Zonas en cluster' : 'Artículos distintos'}</p>
+          <p className="text-base font-bold text-violet-700">{isCluster ? activeClusterZonas.length : fmt(activeZoneRow?.articulos_distintos ?? 0)}</p>
+          <p className="text-xs text-slate-400">{activeZoneArtsAll.length} compañía-artículo</p>
+        </div>
+      </div>
 
       {/* Article table per zone */}
       {companiaLoading ? (
