@@ -573,6 +573,11 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const [page, setPage] = useState(0);
   const filterZona = '';  // Zone filter is now handled by parent via activeZonas
   const PAGE = 200;
+  // Each cluster/zone has its own set of formula columns (like zona_picking_zona_columnas)
+  const distColZoneKey = useMemo(
+    () => activeZonas.length === 1 ? activeZonas[0] : `_cluster_${[...activeZonas].sort().join('_')}`,
+    [activeZonas.join(',')]  // eslint-disable-line react-hooks/exhaustive-deps
+  );
   // Slot stats cross-reference: ubicacion → {total, libres, bloqueados, tipo_ubicacion, dimension}
   const [slotStats, setSlotStats] = useState<Record<string,{total:number;libres:number;bloqueados:number;reservados:number;pct_libres:number;tipo_ubicacion:string;dimension:string;zona_almacenaje:string}>>({});
   // Computed slot costs from Costos de Slots module: ubicacion → {"name:NombreCol": value}
@@ -600,7 +605,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     (async () => {
     const [{data: rpcData}, {data: cols}] = await Promise.all([
       supabase.rpc(rpc, params),
-      supabase.from('zona_picking_distribucion_columnas').select('*').order('orden'),
+      supabase.from('zona_picking_distribucion_columnas').select('*').eq('zona', distColZoneKey).order('orden'),
     ]);
     {
       // RPC already returns cleaned numeric values
@@ -776,7 +781,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   // Column management
   const addCol = async () => {
     if (!newColName.trim()) return;
-    const { data } = await supabase.from('zona_picking_distribucion_columnas').insert({ nombre: newColName.trim(), orden: columnas.length }).select().maybeSingle();
+    const { data } = await supabase.from('zona_picking_distribucion_columnas').insert({ nombre: newColName.trim(), orden: columnas.length, zona: distColZoneKey }).select().maybeSingle();
     if (data) setColumnas(prev => [...prev, data as DistribCol]);
     setNewColName(''); setAddingCol(false);
   };
@@ -1135,6 +1140,8 @@ export default function CostoZonaPickingPage() {
   // Variable columns — global formula constants usable in per-location formulas
   const [varColumnas,setVarColumnas]=useState<VarColumna[]>([]);
   const [varColValues,setVarColValues]=useState<Record<string,number>>({});
+  // Collapsible ubicacion table — collapsed by default, resets on zone/cluster change
+  const [showUbicTable, setShowUbicTable] = useState(false);
 
   const [activeSelection,setActiveSelection]=useState<ActiveSelection>({type:'zone',zona:''});
   const isCluster=activeSelection.type==='cluster';
@@ -1325,7 +1332,7 @@ export default function CostoZonaPickingPage() {
                     {clusters.map(cluster=>{
                       const isActive=activeSelection.type==='cluster'&&activeSelection.cluster.id===cluster.id;
                       const total=zonaResumen.filter(z=>cluster.zonas.includes(z.zona)).reduce((s,z)=>s+z.total_ubicaciones,0);
-                      return<button key={cluster.id} onClick={()=>setActiveSelection({type:'cluster',cluster})}
+                      return<button key={cluster.id} onClick={()=>{setActiveSelection({type:'cluster',cluster});setShowUbicTable(false);}}
                         className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${isActive?`${clusterActiveBg(cluster.color)} border-transparent`:'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
                         <i className={`ri-stack-line ${isActive?'text-white/80':'text-slate-400'}`}/>{cluster.nombre}
                         <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${isActive?'bg-white/20 text-white':'bg-slate-100 text-slate-500'}`}>{fmt(total)}</span>
@@ -1334,7 +1341,7 @@ export default function CostoZonaPickingPage() {
                     {clusters.length>0&&unclusteredZones.length>0&&<div className="flex items-center px-1"><div className="h-5 w-px bg-slate-200"/></div>}
                     {unclusteredZones.map((z,i)=>{
                       const isActive=activeSelection.type==='zone'&&activeSelection.zona===z.zona;
-                      return<button key={z.zona} onClick={()=>setActiveSelection({type:'zone',zona:z.zona})}
+                      return<button key={z.zona} onClick={()=>{setActiveSelection({type:'zone',zona:z.zona});setShowUbicTable(false);}}
                         className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${isActive?'bg-violet-600 text-white border-transparent shadow-sm':'bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:bg-violet-50'}`}>
                         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive?'bg-white/70':ZONE_COLORS[i%ZONE_COLORS.length]}`}/>
                         {z.zona}
@@ -1344,27 +1351,43 @@ export default function CostoZonaPickingPage() {
                     })}
                   </div>
 
-                  {activeZonas.length>0&&(
-                    <ZonaPickingDetailTable
-                      zonas={activeZonas}
-                      zona_label={zonaLabel}
+                  {/* ── 1. Distribución Slot Prime (principal — siempre visible) ── */}
+                  {activeZonas.length > 0 && (
+                    <TablaDistribucionSlotPrime
                       formulaCtx={formulaCtx}
-                      clusters={clusters}
-                      onClustersChange={loadClusters}
-                      allZoneNames={allZoneNames}
-                      zonaTotals={zonaResumen}
                       extraVars={varColValues}
+                      activeZonas={activeZonas}
                     />
                   )}
 
-                  {/* ── Distribución Slot Prime integrada — responde al cluster/zona activo ── */}
+                  {/* ── 2. Tabla de Ubicaciones — colapsable, debajo, específica por cluster ── */}
                   {activeZonas.length > 0 && (
-                    <div className="mt-2 border-t border-slate-200 pt-4">
-                      <TablaDistribucionSlotPrime
-                        formulaCtx={formulaCtx}
-                        extraVars={varColValues}
-                        activeZonas={activeZonas}
-                      />
+                    <div className="mt-3 border-t border-slate-200 pt-3">
+                      <button
+                        onClick={() => setShowUbicTable(v => !v)}
+                        className="flex items-center gap-2 px-4 py-2.5 w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-sm font-medium text-slate-600 transition-colors cursor-pointer"
+                      >
+                        <i className={`ri-${showUbicTable ? 'subtract' : 'add'}-line text-sm`}/>
+                        {showUbicTable ? 'Ocultar' : 'Ver'} tabla de ubicaciones por artículo
+                        <span className="ml-auto text-xs text-slate-400">
+                          {isCluster ? `Cluster: ${zonaLabel}` : zonaLabel}
+                        </span>
+                        <i className={`ri-arrow-${showUbicTable ? 'up' : 'down'}-s-line text-slate-400`}/>
+                      </button>
+                      {showUbicTable && (
+                        <div className="mt-3">
+                          <ZonaPickingDetailTable
+                            zonas={activeZonas}
+                            zona_label={zonaLabel}
+                            formulaCtx={formulaCtx}
+                            clusters={clusters}
+                            onClustersChange={loadClusters}
+                            allZoneNames={allZoneNames}
+                            zonaTotals={zonaResumen}
+                            extraVars={varColValues}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
