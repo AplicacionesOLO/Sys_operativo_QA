@@ -5,6 +5,7 @@ import TiposAreaTab from './components/TiposAreaTab';
 import ZonasTab from './components/ZonasTab';
 import { supabase, isSupabaseReady } from '../../lib/supabase';
 import { cascadeRenameTokens, areaRenamePairs } from '@/lib/formulaTokenRename';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 import type { Area, TipoArea, Zona } from '../../types/areas';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, calcularFormula } from '@/lib/formulaEngine';
@@ -157,26 +158,25 @@ export default function AreasPage() {
   // --- Areas CRUD ---
   const addArea = async (data: Omit<Area, 'id' | 'created_at'>) => {
     const { error: err } = await supabase.from('areas').insert(data);
-    if (!err) fetchAll();
+    if (!err) { invalidateBaseCache(); fetchAll(); }
   };
 
   const editArea = async (id: string, data: Omit<Area, 'id' | 'created_at'>) => {
     const oldArea = areas.find(a => a.id === id);
     const { error: err } = await supabase.from('areas').update(data).eq('id', id);
     if (!err) {
-      // Cascade-rename area tokens in all formula expressions if nombre changed
       if (oldArea && data.nombre !== oldArea.nombre) {
         cascadeRenameTokens(areaRenamePairs(oldArea.nombre, data.nombre));
       }
+      invalidateBaseCache();
       fetchAll();
     }
   };
 
   const deleteArea = async (id: string) => {
-    // First remove parent references from sub-areas
     await supabase.from('areas').update({ parent_id: null }).eq('parent_id', id);
     const { error: err } = await supabase.from('areas').delete().eq('id', id);
-    if (!err) fetchAll();
+    if (!err) { invalidateBaseCache(); fetchAll(); }
   };
 
   const tabs: { id: Tab; label: string; icon: string; count: number }[] = [

@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import type { Factor } from '@/types/factores';
 import { cascadeRenameTokens, factorRenamePairs } from '@/lib/formulaTokenRename';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 
 interface FactorModalState {
   open: boolean;
@@ -60,6 +61,7 @@ export default function FactoresPage() {
     } else {
       await supabase.from('factores').insert(payload);
     }
+    invalidateBaseCache(); // force fresh data on next formula module load
     setSaving(false);
     closeModal();
     await loadFactores();
@@ -68,6 +70,7 @@ export default function FactoresPage() {
   const handleDelete = async (id: string) => {
     if (!confirm('¿Eliminar este factor?')) return;
     await supabase.from('factores').delete().eq('id', id);
+    invalidateBaseCache();
     setFactores(prev => prev.filter(f => f.id !== id));
   };
 

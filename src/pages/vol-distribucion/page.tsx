@@ -3,6 +3,7 @@ import AppLayout from '@/components/feature/AppLayout';
 import { supabase } from '@/lib/supabase';
 import type { VolDistribucion } from '@/types/vol_distribucion';
 import { cascadeRenameTokens, volDistRenamePairs } from '@/lib/formulaTokenRename';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 import { COLOR_CONFIG } from '@/types/vol_distribucion';
 import VolDistribucionChart from './components/VolDistribucionChart';
 import VolDistribucionTotal from './components/VolDistribucionTotal';
@@ -90,6 +91,7 @@ export default function VolDistribucionPage() {
         .from('volumen_distribucion')
         .update({ ...fields, updated_at: new Date().toISOString() })
         .eq('id', id);
+      invalidateBaseCache();
       setSaving(prev => { const s = new Set(prev); s.delete(id); return s; });
       saveTimers.current.delete(id);
     }, 500);

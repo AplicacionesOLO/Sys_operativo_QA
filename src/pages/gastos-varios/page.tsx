@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import { cascadeRenameTokens, gvConceptoRenamePairs } from '@/lib/formulaTokenRename';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 import type { GastoVarioFila, TipoFila } from '@/types/gastos_varios';
 import type { FormulaConfig } from '@/types/costos';
 import EstadoFinancieroTable from './components/EstadoFinancieroTable';
@@ -114,6 +115,7 @@ export default function GastosVariosPage() {
       await supabase.from('gastos_varios').update({ [field]: value }).eq('id', id);
     }
 
+    invalidateBaseCache();
     setSavingId(null);
   }, [filas]);
 

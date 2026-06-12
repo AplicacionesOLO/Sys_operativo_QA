@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 import AppLayout from '@/components/feature/AppLayout';
 import BulkUploadModal from '@/components/feature/BulkUploadModal';
 import type { ManoObraFila, ModuloColumna, ColumnType } from '@/types/mano_obra';
@@ -136,6 +137,7 @@ export default function ManoObraPage() {
     setSavingId(id);
     setFilas(prev => prev.map(f => f.id === id ? { ...f, [field]: value } : f));
     await supabase.from('mano_obra').update({ [field]: value }).eq('id', id);
+    invalidateBaseCache();
     setSavingId(null);
   }, []);
 
@@ -158,6 +160,7 @@ export default function ManoObraPage() {
       const fila = filas.find(f => f.id === id);
       if (fila) await supabase.from('mano_obra').update({ valores: { ...fila.valores, [columnaId]: value } }).eq('id', id);
     }
+    invalidateBaseCache();
     setSavingId(null);
   }, [filas, isAdmin]);
 

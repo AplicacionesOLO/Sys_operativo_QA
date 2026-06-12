@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import AppLayout from '../../components/feature/AppLayout';
 import { supabase, isSupabaseReady } from '../../lib/supabase';
+import { invalidateBaseCache } from '@/lib/formulaBaseCache';
 import type { InversionRecord } from '../../types/inversion';
 import { calcularInversion } from '../../types/inversion';
 import InversionSummary from './components/InversionSummary';
@@ -67,6 +68,7 @@ export default function InversionPage() {
       setSaving((prev) => new Set(prev).add(id));
       try {
         await supabase.from('inversiones').update(changes).eq('id', id);
+        invalidateBaseCache();
       } finally {
         setSaving((prev) => {
           const s = new Set(prev);
@@ -81,6 +83,7 @@ export default function InversionPage() {
     setRecords((prev) => prev.filter((r) => r.id !== id));
     if (isSupabaseReady && supabase) {
       await supabase.from('inversiones').delete().eq('id', id);
+      invalidateBaseCache();
     }
   }, []);
 
