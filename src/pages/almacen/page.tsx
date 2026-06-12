@@ -508,6 +508,14 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // Auto-select first category when data arrives and none is selected
+  useEffect(() => {
+    if (!activeCategoria && !activeCluster && rows.length > 0) {
+      const first = rows.find(r => !clusters.some(c => c.zonas.includes(r.zona_categoria)));
+      if (first) setActiveCategoria(first.zona_categoria);
+    }
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchCategoria = useCallback((categoria: string) => {
     if (categoria === activeCategoria) return;
     setZoneSwitching(true);

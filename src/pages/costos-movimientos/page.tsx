@@ -525,6 +525,13 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
     return derived;
   }, [colOrder, mesesDisponibles, zonaColumnas]);
 
+  // Auto-select first unclustered zone when data arrives and none is selected
+  useEffect(() => {
+    if (activeSelection.type === 'zone' && !activeSelection.zona && unclusteredZones.length > 0) {
+      setActiveSelection({ type: 'zone', zona: unclusteredZones[0] });
+    }
+  }, [unclusteredZones]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchToZone = useCallback((zona: string) => {
     setSearch(''); setArtPage(0);
     setArtSortKey('FIXED:movimientos'); setArtSortDir('desc');
@@ -672,12 +679,24 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
 
   // Column management
   const handleAddColumn = useCallback(async () => {
-    if (!newColName.trim() || !activeZone) return;
+    if (!newColName.trim()) return;
+    // Use cluster key or zone name as the storage key
+    const zoneKey = isCluster ? `_cluster_${activeCluster?.id ?? ''}` : activeZone;
+    if (!zoneKey) return;
     const maxOrden = zonaColumnas.length;
-    const { data: newCol } = await supabase.from('costos_movimientos_zona_columnas').insert({ zona: activeZone, nombre: newColName.trim(), tipo: 'formula', orden: maxOrden }).select().maybeSingle();
+    const { data: newCol, error } = await supabase
+      .from('costos_movimientos_zona_columnas')
+      .insert({ zona: zoneKey, nombre: newColName.trim(), tipo: 'formula', orden: maxOrden })
+      .select()
+      .maybeSingle();
+    if (error) {
+      console.error('Error al crear columna:', error);
+      alert(`No se pudo crear la columna: ${error.message}`);
+      return;
+    }
     if (newCol) { setZonaColumnas(prev => [...prev, newCol as MovimientosZonaColumnaDinamica]); }
     setNewColName(''); setAddingColumn(false);
-  }, [newColName, activeZone, zonaColumnas]);
+  }, [newColName, activeZone, isCluster, activeCluster, zonaColumnas]);
 
   const handleDeleteColumn = useCallback(async (id: string) => {
     if (!confirm('¿Eliminar esta columna?')) return;

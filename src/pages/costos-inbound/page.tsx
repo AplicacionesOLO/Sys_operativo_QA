@@ -455,6 +455,14 @@ function InboundZonaResumenTable({ data, loading, globalTotals, formulaCtx, clus
     return derived;
   }, [colOrder, mesesDisponibles, zonaColumnas]);
 
+  // Auto-select first zone when data arrives and none is selected
+  useEffect(() => {
+    if (!activeZone && rows.length > 0) {
+      const firstUnclustered = rows.find(r => !clusters.some(c => c.zonas.includes(r.zona)));
+      if (firstUnclustered) setActiveZone(firstUnclustered.zona);
+    }
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchZone = useCallback((zona: string) => {
     if (zona === activeZone) return;
     setZoneSwitching(true);
@@ -528,7 +536,11 @@ function InboundZonaResumenTable({ data, loading, globalTotals, formulaCtx, clus
     const name = newColName.trim();
     if (!name) return;
     const orden = zonaColumnas.length;
-    const { data: newCol } = await supabase.from('costos_inbound_zona_columnas').insert({ zona: activeZone, nombre: name, tipo: 'formula', orden }).select().maybeSingle();
+    const { data: newCol, error } = await supabase
+      .from('costos_inbound_zona_columnas')
+      .insert({ zona: activeZone, nombre: name, tipo: 'formula', orden })
+      .select().maybeSingle();
+    if (error) { alert(`Error al crear columna: ${error.message}`); return; }
     if (newCol) {
       setZonaColumnas(prev => [...prev, newCol as InboundZonaColumnaDinamica]);
       setCeldasFormulas(prev => ({ ...prev, [newCol.id]: [] }));

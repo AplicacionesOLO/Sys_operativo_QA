@@ -594,6 +594,14 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // Auto-select first zone when data arrives and none is selected
+  useEffect(() => {
+    if (!activeZone && !activeCluster && rows.length > 0) {
+      const first = rows.find(r => !clusters.some(c => c.zonas.includes(r.zona)));
+      if (first) setActiveZone(first.zona);
+    }
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchZone = useCallback((zona: string) => {
     if (zona === activeZone) return;
     setPrevZone(activeZone);
