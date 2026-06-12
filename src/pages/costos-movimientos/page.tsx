@@ -337,7 +337,7 @@ function ClusterManager({ clusters, zonas, onChanged }: { clusters: MovimientosC
     if (!nombre.trim() || selectedZonas.length === 0) return;
     setSaving(true);
     if (editId) {
-      await supabase.from('costos_movimientos_clusters').update({ nombre: nombre.trim(), zonas: selectedZonas, color, updated_at: new Date().toISOString() } as any).eq('id', editId);
+      await supabase.from('costos_movimientos_clusters').update({ nombre: nombre.trim(), zonas: selectedZonas, color }).eq('id', editId);
     } else {
       await supabase.from('costos_movimientos_clusters').insert({ nombre: nombre.trim(), zonas: selectedZonas, color, orden: clusters.length });
     }
@@ -700,9 +700,11 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
     if (!editingColumnFormula) return;
     const { columnaId } = editingColumnFormula;
     await supabase.from('costos_movimientos_zona_columnas').update({ formula: formula || null }).eq('id', columnaId);
-    setZonaColumnas(prev => prev.map(c => c.id === columnaId ? { ...c, formula: formula || undefined } : c));
+    // Force reload from DB so computedCells picks up the saved formula
+    const key = isCluster ? `_cluster_${activeCluster?.id ?? ''}` : activeZone;
+    if (key) await loadZonaColumnas(key);
     setEditingColumnFormula(null);
-  }, [editingColumnFormula]);
+  }, [editingColumnFormula, isCluster, activeCluster, activeZone, loadZonaColumnas]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;

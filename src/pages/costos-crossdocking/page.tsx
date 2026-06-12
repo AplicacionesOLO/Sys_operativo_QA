@@ -17,12 +17,14 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  useCrossdockingMasivoResumen, useCrossdockingArticuloResumen, useCrossdockingZonaCompaniaResumen, useCrossdockingZonaArticuloMensual,
+  useCrossdockingMasivoResumen, useCrossdockingArticuloResumen, useCrossdockingZonaCompaniaResumen, useCrossdockingZonaArticuloMensual, useCrossdockingClusterCompaniaResumen,
   CrossdockingRawTable, StatCard,
   type ArticuloResumenRow, type ZonaResumenRow, type ZonaArticuloDetalleRow, type ZonaArticuloCompaniaRow, type ZonaArticuloMensualRow, type ResumenCompleto,
 } from './components/MasivoHooks';
 import ExportMenu from '@/components/base/ExportMenu';
 import type { CrossdockingZonaColumnaDinamica } from '@/types/costos_crossdocking';
+import { useZonaClusters, type ZonaCluster } from '@/hooks/useZonaClusters';
+import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
 
 export default function CostosCrossdockingPage() {
   const [loading, setLoading] = useState(true);
@@ -115,7 +117,8 @@ export default function CostosCrossdockingPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); loadMasivo(); }, [loadData, loadMasivo]);
+  const { clusters, loadClusters } = useZonaClusters('costos_crossdocking_clusters');
+  useEffect(() => { loadData(); loadMasivo(); loadClusters(); }, [loadData, loadMasivo, loadClusters]);
 
   useEffect(() => {
     if ((tab === 'articulos' || tab === 'zonas') && !resumenCompleto && hasMasivo) {
@@ -188,7 +191,7 @@ export default function CostosCrossdockingPage() {
 
               {tab === 'resumen' && <CrossdockingResumenTab data={masivoData!} />}
               {tab === 'articulos' && <CrossdockingArticuloResumenTable data={resumenCompleto?.articulos} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovArticulos, totalUnid: resumenCompleto.totalUnidArticulos, totalCount: resumenCompleto.totalArticulos } : undefined} />}
-              {tab === 'zonas' && <CrossdockingZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovZonas, totalUnid: resumenCompleto.totalUnidZonas, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} />}
+              {tab === 'zonas' && <CrossdockingZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalMov: resumenCompleto.totalMovZonas, totalUnid: resumenCompleto.totalUnidZonas, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} clusters={clusters} onClustersChange={loadClusters} />}
               {tab === 'datos' && <CrossdockingRawTable headers={masivoData!.headers} />}
               {tab === 'operacion' && (
                 <div className="py-16 flex flex-col items-center gap-4">
@@ -354,7 +357,7 @@ function CrossdockingArticuloResumenTable({ data, loading, globalTotals }: { dat
 
 // ── Zona Resumen Table (la más importante) ─────────────────────────────────
 
-function CrossdockingZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: ZonaResumenRow[]; loading: boolean; globalTotals?: { totalMov: number; totalUnid: number; totalCount: number }; formulaCtx: FormulaContext }) {
+function CrossdockingZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, onClustersChange }: { data?: ZonaResumenRow[]; loading: boolean; globalTotals?: { totalMov: number; totalUnid: number; totalCount: number }; formulaCtx: FormulaContext; clusters: ZonaCluster[]; onClustersChange: () => void }) {
   const fmt = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
   const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
   const fmtPct = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
@@ -368,8 +371,12 @@ function CrossdockingZonaResumenTable({ data, loading, globalTotals, formulaCtx 
 
   const [activeZone, setActiveZone] = useState<string>(rows[0]?.zona ?? '');
   const { data: companiaData, loading: companiaLoading } = useCrossdockingZonaCompaniaResumen(activeZone);
-  const { data: articuloMensualData } = useCrossdockingZonaArticuloMensual(activeZone);
-  const activeZoneArtsAll = companiaData ?? [];
+  const { data: _articuloMensualDataZone } = useCrossdockingZonaArticuloMensual(activeZone);
+  const [activeCluster, setActiveCluster] = useState<ZonaCluster | null>(null);
+  const [showClusterMgr, setShowClusterMgr] = useState(false);
+  const { data: clusterArts } = useCrossdockingClusterCompaniaResumen(activeCluster?.zonas ?? []);
+  const articuloMensualData = activeCluster ? null : _articuloMensualDataZone;
+  const activeZoneArtsAll = (activeCluster ? clusterArts : companiaData) ?? [];
   const companiasUnicas = useMemo(() => {
     const set = new Set<string>();
     activeZoneArtsAll.forEach(a => { if (a.idCompania) set.add(a.idCompania); });
@@ -698,12 +705,34 @@ function CrossdockingZonaResumenTable({ data, loading, globalTotals, formulaCtx 
         <div className="bg-white rounded-lg px-4 py-3 border border-slate-200"><p className="text-xs text-slate-500 font-medium">Total artículos únicos</p><p className="text-lg font-bold text-slate-800 mt-0.5">{rows.reduce((s, r) => s + r.articulos_distintos, 0).toLocaleString('es-CO')}</p></div>
       </div>
 
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-400">Selecciona zona o cluster</p>
+        <button onClick={() => setShowClusterMgr(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+          <i className={`ri-stack-${showClusterMgr ? 'fill' : 'line'} text-sm`} />
+          Clusters {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+        </button>
+      </div>
+      {showClusterMgr && <ZonaClusterManager tableName="costos_crossdocking_clusters" clusters={clusters} zonas={rows.map(r => r.zona)} onChanged={onClustersChange} />}
       <div className="flex gap-2 flex-wrap">
+        {clusters.map(cluster => {
+          const isActive = activeCluster?.id === cluster.id;
+          const cMov = rows.filter(r => cluster.zonas.includes(r.zona)).reduce((s, r) => s + r.movimientos, 0);
+          const pct = totalMov > 0 ? (cMov / totalMov) * 100 : 0;
+          return (
+            <button key={cluster.id} onClick={() => { setActiveCluster(cluster); setActiveZone(''); }}
+              className={`px-4 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-2 ${isActive ? `${clusterActiveBg(cluster.color)} border-transparent` : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
+              <i className={`ri-stack-line text-xs ${isActive ? 'text-white/80' : 'text-slate-400'}`} />{cluster.nombre}
+              <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{pct.toFixed(1)}%</span>
+            </button>
+          );
+        })}
+        {clusters.length > 0 && rows.some(r => !clusters.flatMap(c => c.zonas).includes(r.zona)) && <div className="flex items-center px-1"><div className="h-5 w-px bg-slate-200" /></div>}
         {rows.map((row, i) => {
-          const isActive = activeZone === row.zona;
+          if (clusters.some(c => c.zonas.includes(row.zona))) return null;
+          const isActive = !activeCluster && activeZone === row.zona;
           const c = zonaTabColors[i % zonaTabColors.length];
           return (
-            <button key={row.zona} onClick={() => switchZone(row.zona)}
+            <button key={row.zona} onClick={() => { setActiveCluster(null); switchZone(row.zona); }}
               className={`px-4 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-2.5 ${isActive ? `${c.activeBg} ${c.activeText} border-transparent` : `bg-white ${c.border} ${c.text} hover:bg-slate-50`}`}
             >
               <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-white/60' : c.dot}`} />

@@ -22,10 +22,12 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  useMasivoResumen, useAlmacenResumenCompleto, useAlmacenZonaCompaniaResumen,
+  useMasivoResumen, useAlmacenResumenCompleto, useAlmacenZonaCompaniaResumen, useAlmacenClusterCompaniaResumen,
   MasivoRawTable, StatCard,
 } from './components/MasivoHooks';
 import ExportMenu from '@/components/base/ExportMenu';
+import { useZonaClusters, type ZonaCluster } from '@/hooks/useZonaClusters';
+import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
 
 type ModalState = { open: false } | { open: true; editing: CostoAlmacenColumna | null };
 
@@ -133,7 +135,8 @@ export default function AlmacenPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); loadMasivo(); }, [loadData, loadMasivo]);
+  const { clusters, loadClusters } = useZonaClusters('costos_almacen_clusters');
+  useEffect(() => { loadData(); loadMasivo(); loadClusters(); }, [loadData, loadMasivo, loadClusters]);
 
   useEffect(() => {
     if ((tab === 'articulos' || tab === 'zonas') && !resumenCompleto && hasMasivo) {
@@ -282,7 +285,7 @@ export default function AlmacenPage() {
 
               {tab === 'resumen' && <ResumenTab data={masivoData!} resumen={resumenCompleto} />}
               {tab === 'articulos' && <ArticuloResumenTable data={resumenCompleto?.articulos} loading={resumenLoading} globalTotals={resumenCompleto ? { totalUnid: resumenCompleto.totalUnidades, totalCount: resumenCompleto.totalArticulos } : undefined} />}
-              {tab === 'zonas' && <ZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalUnid: resumenCompleto.totalUnidades, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} />}
+              {tab === 'zonas' && <ZonaResumenTable data={resumenCompleto?.zonas} loading={resumenLoading} globalTotals={resumenCompleto ? { totalUnid: resumenCompleto.totalUnidades, totalCount: resumenCompleto.totalZonas } : undefined} formulaCtx={formulaCtx} clusters={clusters} onClustersChange={loadClusters} />}
               {tab === 'datos' && <MasivoRawTable headers={masivoData!.headers} />}
               {tab === 'operacion' && (
                 <CostosAlmacenTable
@@ -445,7 +448,7 @@ function ArticuloResumenTable({ data, loading, globalTotals }: { data?: AlmacenR
 
 // ── Zona Resumen Table (4 categorías: Racks, Racks-Dobles, Pesado, Piso) ───
 
-function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: AlmacenResumenCompleto['zonas']; loading: boolean; globalTotals?: { totalUnid: number; totalCount: number }; formulaCtx: FormulaContext }) {
+function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, onClustersChange }: { data?: AlmacenResumenCompleto['zonas']; loading: boolean; globalTotals?: { totalUnid: number; totalCount: number }; formulaCtx: FormulaContext; clusters: ZonaCluster[]; onClustersChange: () => void }) {
   const fmt = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
   const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
   const fmtPct = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
@@ -458,7 +461,11 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
 
   const [activeCategoria, setActiveCategoria] = useState<string>(rows[0]?.zona_categoria ?? '');
   const { data: companiaData, loading: companiaLoading } = useAlmacenZonaCompaniaResumen(activeCategoria);
-  const activeZoneArtsAll = companiaData ?? [];
+  // Cluster support
+  const [activeCluster, setActiveCluster] = useState<ZonaCluster | null>(null);
+  const [showClusterMgr, setShowClusterMgr] = useState(false);
+  const { data: clusterArts } = useAlmacenClusterCompaniaResumen(activeCluster?.zonas ?? []);
+  const activeZoneArtsAll = (activeCluster ? clusterArts : companiaData) ?? [];
   const companiasUnicas = useMemo(() => {
     const set = new Set<string>();
     activeZoneArtsAll.forEach(a => { if (a.idCompania) set.add(a.idCompania); });
@@ -774,15 +781,39 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx }: { data?: 
         <div className="bg-white rounded-lg px-4 py-3 border border-slate-200"><p className="text-xs text-slate-500 font-medium">Promedio unid/zona</p><p className="text-lg font-bold text-slate-800 mt-0.5">{fmtDec(totalCount > 0 ? totalUnid / totalCount : 0)}</p></div>
       </div>
 
+      {/* Cluster manager */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-400">Selecciona categoría o cluster de zonas</p>
+        <button onClick={() => setShowClusterMgr(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+          <i className={`ri-stack-${showClusterMgr ? 'fill' : 'line'} text-sm`} />
+          Clusters {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+        </button>
+      </div>
+      {showClusterMgr && <ZonaClusterManager tableName="costos_almacen_clusters" clusters={clusters} zonas={rows.map(r => r.zona_categoria)} onChanged={onClustersChange} />}
+
       {/* Category pills */}
       <div className="flex gap-2 flex-wrap">
+        {clusters.map(cluster => {
+          const isActive = activeCluster?.id === cluster.id;
+          const cUd = rows.filter(r => cluster.zonas.includes(r.zona_categoria)).reduce((s, r) => s + r.cantidad_unidades, 0);
+          const pct = totalUnid > 0 ? (cUd / totalUnid) * 100 : 0;
+          return (
+            <button key={cluster.id} onClick={() => { setActiveCluster(cluster); setActiveCategoria(''); }}
+              className={`px-4 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-2 ${isActive ? `${clusterActiveBg(cluster.color)} border-transparent` : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
+              <i className={`ri-stack-line text-xs ${isActive ? 'text-white/80' : 'text-slate-400'}`} />{cluster.nombre}
+              <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{pct.toFixed(1)}%</span>
+            </button>
+          );
+        })}
+        {clusters.length > 0 && rows.some(r => !clusters.flatMap(c => c.zonas).includes(r.zona_categoria)) && <div className="flex items-center px-1"><div className="h-5 w-px bg-slate-200" /></div>}
         {rows.map((row, i) => {
-          const isActive = activeCategoria === row.zona_categoria;
+          if (clusters.some(c => c.zonas.includes(row.zona_categoria))) return null;
+          const isActive = !activeCluster && activeCategoria === row.zona_categoria;
           const c = zonaTabColors[i % zonaTabColors.length];
           return (
             <button
               key={row.zona_categoria}
-              onClick={() => switchCategoria(row.zona_categoria)}
+              onClick={() => { setActiveCluster(null); switchCategoria(row.zona_categoria); }}
               className={`px-4 py-2.5 rounded-xl border text-sm font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-2.5 ${
                 isActive
                   ? `${c.activeBg} ${c.activeText} border-transparent`

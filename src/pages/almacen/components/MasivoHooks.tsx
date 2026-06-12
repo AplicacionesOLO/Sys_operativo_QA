@@ -226,6 +226,27 @@ export function MasivoRawTable({ headers }: { headers: string[] }) {
   );
 }
 
+// ── Cluster (multi-zone) hooks ───────────────────────────────────────────────
+
+export function useAlmacenClusterCompaniaResumen(zonaCategorias: string[]) {
+  const [data, setData] = useState<AlmacenZonaArticuloCompaniaRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(async () => {
+    if (!zonaCategorias.length) { setData(null); return; }
+    setLoading(true);
+    const PAGE = 1000; let all: any[] = []; let offset = 0;
+    while (true) {
+      const { data: page } = await supabase.rpc('fn_almacen_zonas_compania_articulo_v4', { p_zona_categorias: zonaCategorias, p_offset: offset, p_limit: PAGE });
+      if (!page || page.length === 0) break;
+      all = all.concat(page); if (page.length < PAGE) break; offset += PAGE;
+    }
+    setData(all.map((r: any) => ({ zona_categoria: 'CLUSTER', idCompania: String(r.id_compania ?? ''), articulo: String(r.articulo ?? ''), descripcion: String(r.descripcion ?? ''), registros: Number(r.registros) || 0, cantidad_unidades: Number(r.cantidad_unidades) || 0, nombre_compania: '', pct_cantidad: Number(r.pct_cantidad) || 0 })));
+    setLoading(false);
+  }, [JSON.stringify(zonaCategorias)]); // eslint-disable-line
+  useEffect(() => { load(); }, [load]);
+  return { data, loading, load };
+}
+
 export function StatCard({ icon, iconColor, bg, label, value, sub }: { icon: string; iconColor: string; bg: string; label: string; value: string; sub: string }) {
   return (
     <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 flex items-center gap-4">

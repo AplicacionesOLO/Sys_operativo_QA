@@ -289,6 +289,43 @@ export function InboundRawTable({ headers }: { headers: string[] }) {
   );
 }
 
+// ── Cluster (multi-zone) hooks ───────────────────────────────────────────────
+
+export function useInboundClusterCompaniaResumen(zonas: string[]) {
+  const [data, setData] = useState<InboundZonaArticuloCompaniaRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(async () => {
+    if (!zonas.length) { setData(null); return; }
+    setLoading(true);
+    const PAGE = 1000; let all: any[] = []; let offset = 0;
+    while (true) {
+      const { data: page } = await supabase.rpc('fn_inbound_zonas_compania_articulo', { p_zonas: zonas, p_offset: offset, p_limit: PAGE });
+      if (!page || page.length === 0) break;
+      all = all.concat(page); if (page.length < PAGE) break; offset += PAGE;
+    }
+    setData(all.map((r: any) => ({ zona: 'CLUSTER', idCompania: String(r.id_compania ?? ''), articulo: String(r.articulo ?? ''), descripcion: String(r.descripcion ?? ''), movimientos: Number(r.movimientos) || 0, unidades: Number(r.unidades) || 0 })));
+    setLoading(false);
+  }, [JSON.stringify(zonas)]); // eslint-disable-line
+  useEffect(() => { load(); }, [load]);
+  return { data, loading, load };
+}
+
+export function useInboundClusterMensual(zonas: string[]) {
+  const [data, setData] = useState<InboundZonaArticuloMensualRow[] | null>(null);
+  const load = useCallback(async () => {
+    if (!zonas.length) { setData(null); return; }
+    const PAGE = 1000; let all: any[] = []; let offset = 0;
+    while (true) {
+      const { data: page } = await supabase.rpc('fn_inbound_zona_articulo_mensual', { p_zona: zonas[0], p_offset: offset, p_limit: PAGE });
+      if (!page || page.length === 0) break;
+      all = all.concat(page); if (page.length < PAGE) break; offset += PAGE;
+    }
+    setData(all.map((r: any) => ({ zona: 'CLUSTER', idCompania: String(r.id_compania ?? ''), articulo: String(r.articulo ?? ''), descripcion: String(r.descripcion ?? ''), mes: Number(r.mes) || 0, mes_nombre: String(r.mes_nombre ?? ''), movimientos: Number(r.movimientos) || 0, unidades: Number(r.unidades) || 0 })));
+  }, [JSON.stringify(zonas)]); // eslint-disable-line
+  useEffect(() => { load(); }, [load]);
+  return { data, load };
+}
+
 // ── StatCard ────────────────────────────────────────────────────────────────
 
 export function StatCard({ icon, iconColor, bg, label, value, sub }: { icon: string; iconColor: string; bg: string; label: string; value: string; sub: string }) {
