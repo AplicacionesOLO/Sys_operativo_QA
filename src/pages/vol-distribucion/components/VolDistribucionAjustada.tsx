@@ -374,7 +374,7 @@ export default function VolDistribucionAjustada({ items, onItemsChange }: Props)
                       {seg ? (
                         <div className="flex flex-col items-end">
                           <span className="text-sm font-bold tabular-nums" style={{ color: cfg.hex }}>{seg.pctCat.toFixed(2)}%</span>
-                          <span className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(4)}</span>
+                          <span className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(2)}</span>
                         </div>
                       ) : (
                         <span className="text-xs text-rose-400 italic">Excluido</span>
@@ -443,7 +443,7 @@ export default function VolDistribucionAjustada({ items, onItemsChange }: Props)
                       {seg ? (
                         <div className="flex flex-col items-end">
                           <span className="text-sm font-bold tabular-nums" style={{ color: cfg.hex }}>{seg.pctCat.toFixed(2)}%</span>
-                          <span className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(4)}</span>
+                          <span className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(2)}</span>
                         </div>
                       ) : (
                         <span className="text-xs text-rose-400 italic">Excluido</span>
@@ -530,7 +530,7 @@ export default function VolDistribucionAjustada({ items, onItemsChange }: Props)
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="text-xs font-bold tabular-nums" style={{ color: seg.cfg.hex }}>{seg.pctCat.toFixed(2)}%</p>
-                      <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(4)}</p>
+                      <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(2)}</p>
                     </div>
                   </div>
                 ))}
@@ -552,7 +552,7 @@ export default function VolDistribucionAjustada({ items, onItemsChange }: Props)
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="text-xs font-bold tabular-nums" style={{ color: seg.cfg.hex }}>{seg.pctCat.toFixed(2)}%</p>
-                      <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(4)}</p>
+                      <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctCat / 100).toFixed(2)}</p>
                     </div>
                   </div>
                 ))}

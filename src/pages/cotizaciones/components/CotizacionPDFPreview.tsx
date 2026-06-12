@@ -315,7 +315,7 @@ export default function CotizacionPDFPreview({ cotizacion, items, columnas, form
                               {cotizacion.sim_multiplier !== 1 ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
                                   <span style={{ display: 'inline-block', padding: '1px 6px', borderRadius: 20, backgroundColor: '#fff7ed', color: '#c2410c', fontSize: fs, fontWeight: 800 }}>
-                                    ×{+(item.multiplicador * cotizacion.sim_multiplier).toFixed(4)}
+                                    ×{+(item.multiplicador * cotizacion.sim_multiplier).toFixed(2)}
                                   </span>
                                   <span style={{ fontSize: fs - 2, color: '#9ca3af' }}>
                                     ({item.multiplicador}×{cotizacion.sim_multiplier})

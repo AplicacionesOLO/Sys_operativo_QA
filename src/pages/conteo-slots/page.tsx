@@ -134,7 +134,7 @@ export default function ConteoSlotsPage() {
 
   const { clusters, loadClusters } = useZonaClusters('conteo_slots_clusters');
 
-  // Load overview
+  // Load overview — NO clusters dependency to avoid infinite loop
   const loadData = useCallback(async () => {
     setLoading(true);
     const { count } = await supabase.from('conteo_slots_raw').select('*', { count: 'exact', head: true });
@@ -151,13 +151,19 @@ export default function ConteoSlotsPage() {
     setGlobalTotals({ total_slots: Number(t0.total_slots)||0, total_zonas: Number(t0.total_zonas)||0, total_libres: Number(t0.total_libres)||0, total_bloqueados: Number(t0.total_bloqueados)||0, total_reservados: Number(t0.total_reservados)||0 });
     const zonas = ((zonasRaw ?? []) as any[]).map((r: any) => ({ zona: String(r.zona??''), total_slots: Number(r.total_slots)||0, libres: Number(r.libres)||0, bloqueados: Number(r.bloqueados)||0, reservados: Number(r.reservados)||0, otros: Number(r.otros)||0 }));
     setZonaResumen(zonas);
-    // Auto-select first unclustered zone
-    const firstUnclustered = zonas.find(z => !clusters.some(c => c.zonas.includes(z.zona)));
-    if (firstUnclustered) setActiveSelection({ type: 'zone', zona: firstUnclustered.zona });
     setLoading(false);
-  }, [clusters]);
+  }, []); // ← no deps: stable reference, no loop
 
+  // loadData and loadClusters run once on mount
   useEffect(() => { loadData(); loadClusters(); }, [loadData, loadClusters]);
+
+  // Auto-select first unclustered zone after data + clusters load
+  useEffect(() => {
+    if (activeSelection.type === 'zone' && !activeSelection.zona && zonaResumen.length > 0) {
+      const first = zonaResumen.find(z => !clusters.some(c => c.zonas.includes(z.zona)));
+      if (first) setActiveSelection({ type: 'zone', zona: first.zona });
+    }
+  }, [zonaResumen, clusters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load detail breakdown when selection changes
   useEffect(() => {
@@ -174,7 +180,7 @@ export default function ConteoSlotsPage() {
   }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleClearAll = async () => {
-    if (!confirm('¿Eliminar TODOS los datos de Conteo de Slots?')) return;
+    if (!confirm('¿Eliminar TODOS los datos de Costos de Slots?')) return;
     setClearing(true);
     await supabase.from('conteo_slots_raw').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     setClearing(false);
@@ -196,14 +202,14 @@ export default function ConteoSlotsPage() {
   const ZONE_COLORS = ['bg-cyan-500','bg-indigo-500','bg-teal-500','bg-sky-500','bg-violet-500','bg-amber-500','bg-emerald-500','bg-rose-500'];
 
   if (loading) return (
-    <AppLayout title="Conteo de Slots" subtitle="Cargando...">
+    <AppLayout title="Costos de Slots" subtitle="Cargando...">
       <div className="flex items-center justify-center py-32"><div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" /></div>
     </AppLayout>
   );
 
   return (
     <AppLayout
-      title="Conteo de Slots"
+      title="Costos de Slots"
       subtitle="Inventario de ubicaciones por zona · Agrupación por clusters"
       actions={
         <div className="flex items-center gap-2">
@@ -216,7 +222,7 @@ export default function ConteoSlotsPage() {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-slate-800">Conteo de Slots — Inventario de ubicaciones</h3>
+              <h3 className="text-sm font-semibold text-slate-800">Costos de Slots — Inventario de ubicaciones</h3>
               <p className="text-xs text-slate-400 mt-0.5">Zona de agrupación: <strong>Zona Almacenaje</strong></p>
             </div>
             {masivoInfo && <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-50 text-cyan-700 font-medium">{fmt(masivoInfo.totalRegistros)} slots</span>}

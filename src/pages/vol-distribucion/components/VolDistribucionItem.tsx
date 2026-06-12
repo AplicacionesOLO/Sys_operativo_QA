@@ -165,7 +165,7 @@ export default function VolDistribucionItem({ item, totalPct, onUpdate, onDelete
             <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md">
               {`{VOLDIST_${item.nombre.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}}`}
             </span>
-            <span className="text-xs text-slate-400">→ fracción decimal: {(item.porcentaje / 100).toFixed(4)}</span>
+            <span className="text-xs text-slate-400">→ fracción decimal: {(item.porcentaje / 100).toFixed(2)}</span>
           </div>
         </div>
 

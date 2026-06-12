@@ -129,7 +129,7 @@ export default function VolDistribucionPage() {
 
     const recalculated = updatedItems.map(i => {
       if (i.categoria !== catDB) return i;
-      const pct = totalUds > 0 ? parseFloat(((i.unidades / totalUds) * 100).toFixed(4)) : 0;
+      const pct = totalUds > 0 ? parseFloat(((i.unidades / totalUds) * 100).toFixed(2)) : 0;
       return cat === 'inbound'
         ? { ...i, porcentaje_inbound: pct }
         : { ...i, porcentaje_outbound: pct };
@@ -178,7 +178,7 @@ export default function VolDistribucionPage() {
     const field = activeTab === 'inbound' ? 'porcentaje_inbound' : 'porcentaje_outbound';
     const updated = items.map(i =>
       i.categoria === catDB && i.is_active
-        ? { ...i, [field]: parseFloat((i[field as keyof VolDistribucion] as number * factor).toFixed(4)) }
+        ? { ...i, [field]: parseFloat((i[field as keyof VolDistribucion] as number * factor).toFixed(2)) }
         : i
     );
     setItems(updated);
@@ -442,7 +442,7 @@ export default function VolDistribucionPage() {
                 const isSaving = saving.has(item.id);
                 const pctValue = activeTab === 'inbound' ? item.porcentaje_inbound : item.porcentaje_outbound;
                 const totalUdsCatLocal = catItems.reduce((s, i) => s + (i.unidades ?? 0), 0);
-                const calcPct = totalUdsCatLocal > 0 ? parseFloat(((item.unidades / totalUdsCatLocal) * 100).toFixed(4)) : 0;
+                const calcPct = totalUdsCatLocal > 0 ? parseFloat(((item.unidades / totalUdsCatLocal) * 100).toFixed(2)) : 0;
                 const isManualOverride = Math.abs(pctValue - calcPct) > 0.1 && totalUdsCatLocal > 0;
 
                 return (
@@ -550,7 +550,7 @@ export default function VolDistribucionPage() {
                   const cfg = COLOR_CONFIG[item.color ?? 'emerald'] ?? COLOR_CONFIG.emerald;
                   const pctValue = activeTab === 'inbound' ? item.porcentaje_inbound : item.porcentaje_outbound;
                   const totalUdsCatLocal = catItems.reduce((s, i) => s + (i.unidades ?? 0), 0);
-                  const calcPct = totalUdsCatLocal > 0 ? parseFloat(((item.unidades / totalUdsCatLocal) * 100).toFixed(4)) : 0;
+                  const calcPct = totalUdsCatLocal > 0 ? parseFloat(((item.unidades / totalUdsCatLocal) * 100).toFixed(2)) : 0;
 
                   return (
                     <div key={item.id} className="flex items-center gap-4">
@@ -626,7 +626,7 @@ export default function VolDistribucionPage() {
                         </div>
                         <div className="text-right flex-shrink-0">
                           <p className="text-xs font-bold tabular-nums" style={{ color: currentTab.hex }}>{pctValue.toFixed(2)}%</p>
-                          <p className="text-xs text-slate-400 tabular-nums">= {(pctValue / 100).toFixed(4)}</p>
+                          <p className="text-xs text-slate-400 tabular-nums">= {(pctValue / 100).toFixed(2)}</p>
                         </div>
                       </div>
                     );

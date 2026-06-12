@@ -363,7 +363,7 @@ export default function CotizacionTable({
                               {globalMultiplier !== 1 ? (
                                 <>
                                   <span className="text-xs font-bold text-orange-700 bg-orange-100 border border-orange-300 px-2.5 py-0.5 rounded-full whitespace-nowrap">
-                                    ×{+(item.multiplicador * globalMultiplier).toFixed(4)}
+                                    ×{+(item.multiplicador * globalMultiplier).toFixed(2)}
                                   </span>
                                   <div className="flex items-center gap-1 mt-0.5">
                                     <button

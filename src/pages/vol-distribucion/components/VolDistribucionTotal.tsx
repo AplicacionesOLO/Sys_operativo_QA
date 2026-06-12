@@ -479,7 +479,7 @@ export default function VolDistribucionTotal({ items, onItemsChange }: Props) {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="text-xs font-bold tabular-nums" style={{ color: seg.cfg.hex }}>{seg.pctTotal.toFixed(2)}%</p>
-                    <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctTotal / 100).toFixed(4)}</p>
+                    <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctTotal / 100).toFixed(2)}</p>
                   </div>
                 </div>
               ))}
@@ -501,7 +501,7 @@ export default function VolDistribucionTotal({ items, onItemsChange }: Props) {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="text-xs font-bold tabular-nums" style={{ color: seg.cfg.hex }}>{seg.pctTotal.toFixed(2)}%</p>
-                    <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctTotal / 100).toFixed(4)}</p>
+                    <p className="text-xs text-slate-400 tabular-nums">= {(seg.pctTotal / 100).toFixed(2)}</p>
                   </div>
                 </div>
               ))}

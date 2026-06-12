@@ -181,7 +181,7 @@ export default function CotizacionSidebar({
                               <span className="text-xs text-slate-400">{c.moneda}</span>
                               {c.total_general > 0 && (
                                 <span className="text-xs font-semibold text-emerald-600">
-                                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: c.moneda, maximumFractionDigits: 0 }).format(c.total_general)}
+                                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: c.moneda, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(c.total_general)}
                                 </span>
                               )}
                             </div>
