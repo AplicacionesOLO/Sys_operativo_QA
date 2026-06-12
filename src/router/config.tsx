@@ -19,6 +19,7 @@ import VolDistribucionPage from '@/pages/vol-distribucion/page';
 import ConfiguracionPage from '@/pages/configuracion/page';
 import FactoresPage from '@/pages/factores/page';
 import BitacoraPage from '@/pages/bitacora/page';
+import CostosMovimientosPage from '@/pages/costos-movimientos/page';
 import ProtectedRoute from '@/components/feature/ProtectedRoute';
 
 const routes: RouteObject[] = [
@@ -40,6 +41,7 @@ const routes: RouteObject[] = [
   { path: '/vol-distribucion', element: <ProtectedRoute moduleKey="volumenes"><VolDistribucionPage /></ProtectedRoute> },
   { path: '/configuracion', element: <ProtectedRoute moduleKey="configuracion"><ConfiguracionPage /></ProtectedRoute> },
   { path: '/factores', element: <ProtectedRoute moduleKey="costos"><FactoresPage /></ProtectedRoute> },
+  { path: '/costos-movimientos', element: <ProtectedRoute moduleKey="costos"><CostosMovimientosPage /></ProtectedRoute> },
   { path: '/bitacora', element: <ProtectedRoute><BitacoraPage /></ProtectedRoute> },
   { path: '*', element: <NotFound /> },
 ];

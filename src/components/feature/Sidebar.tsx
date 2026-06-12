@@ -11,6 +11,7 @@ const MODULE_PATHS: Record<string, string> = {
   'costos-outbound': '/costos-outbound',
   'costos-crossdocking': '/costos-crossdocking',
   'costos-inbound': '/costos-inbound',
+  'costos-movimientos': '/costos-movimientos',
   almacen: '/almacen',
   cotizaciones: '/cotizaciones',
   'mano-obra': '/mano-obra',
@@ -90,7 +91,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           { key: 'costos-outbound', label: 'Costos Outbound', icon: 'ri-archive-line' },
           { key: 'costos-crossdocking', label: 'Costos Crossdocking', icon: 'ri-arrow-left-right-line' },
           { key: 'costos-inbound', label: 'Costos Inbound', icon: 'ri-logout-box-line' },
-          { key: 'almacen', label: 'Almacén', icon: 'ri-store-2-line' },
+          { key: 'costos-movimientos', label: 'Costos Movimientos', icon: 'ri-truck-line' },
+          { key: 'almacen', label: 'Costos Almacén', icon: 'ri-store-2-line' },
         ].map((item) => {
             const path = MODULE_PATHS[item.key];
             const isActive =
