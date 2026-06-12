@@ -44,6 +44,11 @@ export default function CostosMovimientosPage() {
     setLoading(true);
     const base = await fetchBaseQueryData();
     const { areasData, invData, gastosColData, gastosFilData, areaDistribData, moColData, moFilData, volColData, volFilData, empData, volDistData, factoresData, masivoZonData, masivoTotales } = base;
+    // Fetch costos operación for formula variable generation (COSTOS_TOTAL_* tokens)
+    const [{ data: costosColData }, { data: costosFilData }] = await Promise.all([
+      supabase.from('costos_columnas').select('*').order('orden'),
+      supabase.from('costos_operacion').select('*').order('orden'),
+    ]);
 
     const areasWithCat = ((areasData ?? []) as any[]).map((a: any) => ({
       id: a.id, nombre: a.nombre, metros_cuadrados: a.metros_cuadrados ?? 0,
@@ -84,8 +89,8 @@ export default function CostosMovimientosPage() {
       manoObraEmpleados: (empData ?? []) as FormulaContext['manoObraEmpleados'],
       volumenesColumnas: (volColData ?? []) as FormulaContext['volumenesColumnas'],
       volumenesFilas: (volFilData ?? []) as FormulaContext['volumenesFilas'],
-      costosColumnas: [] as FormulaContext['costosColumnas'],
-      costosFilas: [] as FormulaContext['costosFilas'],
+      costosColumnas: (costosColData ?? []) as FormulaContext['costosColumnas'],
+      costosFilas: (costosFilData ?? []) as FormulaContext['costosFilas'],
       areasData: areasWithCat.map(a => ({ nombre: a.nombre, metros_cuadrados: a.metros_cuadrados, cantidad_racks: a.cantidad_racks, metros_cubicos: a.metros_cubicos, costo_area: a.costo_area })),
       volDistribucion: (volDistData ?? []) as FormulaContext['volDistribucion'],
       factores: (factoresData ?? []) as FormulaContext['factores'],
