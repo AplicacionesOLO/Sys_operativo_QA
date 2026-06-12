@@ -94,6 +94,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           { key: 'costos-inbound', label: 'Costos Inbound', icon: 'ri-logout-box-line' },
           { key: 'costos-movimientos', label: 'Costos Movimientos', icon: 'ri-truck-line' },
           { key: 'conteo-slots', label: 'Costos de Slots', icon: 'ri-layout-grid-line' },
+          { key: 'zona-picking', label: 'Costo Zona Picking', icon: 'ri-map-pin-line' },
           { key: 'almacen', label: 'Costos Almacén', icon: 'ri-store-2-line' },
         ].map((item) => {
             const path = MODULE_PATHS[item.key];
