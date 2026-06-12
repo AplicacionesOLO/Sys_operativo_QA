@@ -19,7 +19,18 @@ import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ZonaResumen { zona: string; total_ubicaciones: number; articulos_distintos: number; companias_distintas: number; pct_picking_promedio: number; suma_cant_max: number; }
 interface VarColumna { id: string; nombre: string; formula?: string; orden: number; }
-interface PickingRow { ubicacion: string; id_articulo: string; id_compania: string; descripcion: string; zona_picking: string; pct_picking: number; cant_max: number; cant_min: number; compania: string; sucursal: string; id_presentacion: string; auto_reponer: string; }
+// Row now grouped by Ubicación — shows article count per location
+interface PickingRow {
+  ubicacion: string;
+  total_articulos: number;   // how many articles are at this location
+  pct_picking_promedio: number;
+  suma_cant_max: number;
+  suma_cant_min: number;
+  companias: string;
+  zona_picking: string;
+}
+// Detail of individual articles within a location (drill-down)
+interface ArticuloRow { id_articulo: string; descripcion: string; id_compania: string; compania: string; pct_picking: number; cant_max: number; cant_min: number; id_presentacion: string; auto_reponer: string; }
 interface ZonaColumna { id: string; zona: string; nombre: string; tipo: string; orden: number; formula?: string; }
 interface MasivoInfo { totalRegistros: number; headers: string[] }
 type Tab = 'resumen' | 'zonas' | 'datos';
@@ -28,13 +39,14 @@ type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; clust
 const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
 const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
-// Tokens disponibles en fórmulas de Zona Picking
+// Tokens disponibles en fórmulas — nivel Ubicación (agrupado)
 const PICKING_TOKENS = [
-  { token: '{PCT_PICKING}',   label: '% Picking',        desc: 'Porcentaje de picking de esta ubicación' },
-  { token: '{CANT_MAX}',      label: 'Cantidad Máxima',  desc: 'Cantidad máxima de la ubicación' },
-  { token: '{CANT_MIN}',      label: 'Cantidad Mínima',  desc: 'Cantidad mínima de la ubicación' },
-  { token: '{ZONA_TOTAL}',    label: 'Total Zona',       desc: 'Total de ubicaciones en la zona' },
-  { token: '{PCT_ZONA}',      label: '% de Zona',        desc: '% de esta ubicación sobre el total de la zona (1/ZONA_TOTAL × 100)' },
+  { token: '{TOTAL_ARTICULOS}',   label: 'Total Artículos',     desc: 'Cantidad de artículos asignados a esta ubicación' },
+  { token: '{SUMA_CANT_MAX}',     label: 'Σ Cant. Máx.',        desc: 'Suma de Cantidad Máxima de todos los artículos de esta ubicación' },
+  { token: '{SUMA_CANT_MIN}',     label: 'Σ Cant. Mín.',        desc: 'Suma de Cantidad Mínima de todos los artículos de esta ubicación' },
+  { token: '{PCT_PICKING_PROM}',  label: '% Picking promedio',  desc: 'Promedio de % Picking de los artículos de esta ubicación' },
+  { token: '{ZONA_TOTAL}',        label: 'Total Zona',          desc: 'Total de ubicaciones únicas en la zona' },
+  { token: '{PCT_ZONA}',          label: '% de Zona',           desc: '% de artículos de esta ubicación sobre el total de la zona' },
 ];
 
 // ── Raw Table ─────────────────────────────────────────────────────────────────
@@ -131,15 +143,18 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
   const loadRows=useCallback(async()=>{
     if(!zonas.length)return;
     setLoading(true);
-    const rpc=zonas.length>1?'fn_picking_zonas_detalle':'fn_picking_zona_detalle';
-    const params=zonas.length>1?{p_zonas:zonas,p_offset:0,p_limit:2000}:{p_zona:zonas[0],p_offset:0,p_limit:2000};
+    // Use ubicacion-grouped RPCs — each row = one location with its article count
+    const rpc=zonas.length>1?'fn_picking_zonas_ubicaciones':'fn_picking_zona_ubicaciones';
+    const params=zonas.length>1?{p_zonas:zonas,p_offset:0,p_limit:5000}:{p_zona:zonas[0],p_offset:0,p_limit:5000};
     const {data}=await supabase.rpc(rpc,params);
     setRows(((data??[])as any[]).map((r:any)=>({
-      ubicacion:String(r.ubicacion??''),id_articulo:String(r.id_articulo??''),id_compania:String(r.id_compania??''),
-      descripcion:String(r.descripcion??''),zona_picking:String(r.zona_picking??''),
-      pct_picking:Number(r.pct_picking)||0,cant_max:Number(r.cant_max)||0,cant_min:Number(r.cant_min)||0,
-      compania:String(r.compania??''),sucursal:String(r.sucursal??''),
-      id_presentacion:String(r.id_presentacion??''),auto_reponer:String(r.auto_reponer??''),
+      ubicacion:String(r.ubicacion??''),
+      total_articulos:Number(r.total_articulos)||0,
+      pct_picking_promedio:Number(r.pct_picking_promedio)||0,
+      suma_cant_max:Number(r.suma_cant_max)||0,
+      suma_cant_min:Number(r.suma_cant_min)||0,
+      companias:String(r.companias??''),
+      zona_picking:String(r.zona_picking??''),
     })));
     setLoading(false);
   },[zonas.join(',')]); // eslint-disable-line
@@ -168,26 +183,45 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
   const colNameToToken=useCallback((n:string)=>n.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(),[]);
 
   const buildRowVarMap=useCallback((row:PickingRow)=>({
-    PCT_PICKING:row.pct_picking,
-    CANT_MAX:row.cant_max,
-    CANT_MIN:row.cant_min,
-    ZONA_TOTAL:zonaTotalUbicaciones,
-    PCT_ZONA:zonaTotalUbicaciones>0?(1/zonaTotalUbicaciones)*100:0,
-    ...extraVars,   // ← variables de la tabla de resumen/variables
+    TOTAL_ARTICULOS: row.total_articulos,
+    SUMA_CANT_MAX: row.suma_cant_max,
+    SUMA_CANT_MIN: row.suma_cant_min,
+    PCT_PICKING_PROM: row.pct_picking_promedio,
+    ZONA_TOTAL: zonaTotalUbicaciones,
+    PCT_ZONA: zonaTotalUbicaciones > 0 ? (row.total_articulos / rows.reduce((s,r)=>s+r.total_articulos,1)) * 100 : 0,
+    ...extraVars,
     ...systemVarMap,
-  }),[zonaTotalUbicaciones,systemVarMap,extraVars]);
+  }),[zonaTotalUbicaciones, rows, systemVarMap, extraVars]);
 
   const columnOrder=useMemo(()=>{
-    const derived=['FIXED:ubicacion','FIXED:id_articulo','FIXED:descripcion','FIXED:compania','FIXED:pct_picking','FIXED:cant_max','FIXED:cant_min','FIXED:auto_reponer',...zonaColumnas.map(c=>c.id)];
+    const derived=[
+      'FIXED:ubicacion','FIXED:total_articulos','FIXED:pct_zona',
+      'FIXED:pct_picking_prom','FIXED:suma_cant_max','FIXED:suma_cant_min','FIXED:companias',
+      ...zonaColumnas.map(c=>c.id)
+    ];
     const s=new Set(derived);
     if(colOrder.length===derived.length&&colOrder.every(k=>s.has(k)))return colOrder;
     return derived;
   },[colOrder,zonaColumnas]);
 
+  // Drill-down: articles within a selected location
+  const [expandedUbic, setExpandedUbic] = useState<string|null>(null);
+  const [ubicArticulos, setUbicArticulos] = useState<ArticuloRow[]>([]);
+  const [ubicArtsLoading, setUbicArtsLoading] = useState(false);
+  const loadUbicArticulos = useCallback(async (ubicacion: string) => {
+    if (expandedUbic === ubicacion) { setExpandedUbic(null); return; }
+    setExpandedUbic(ubicacion);
+    setUbicArtsLoading(true);
+    const zona = zonas[0] ?? '';
+    const {data} = await supabase.rpc('fn_picking_ubicacion_articulos', { p_zona: zona, p_ubicacion: ubicacion, p_offset: 0, p_limit: 200 });
+    setUbicArticulos(((data??[]) as any[]).map((r:any) => ({ id_articulo:String(r.id_articulo??''), descripcion:String(r.descripcion??''), id_compania:String(r.id_compania??''), compania:String(r.compania??''), pct_picking:Number(r.pct_picking)||0, cant_max:Number(r.cant_max)||0, cant_min:Number(r.cant_min)||0, id_presentacion:String(r.id_presentacion??''), auto_reponer:String(r.auto_reponer??'') })));
+    setUbicArtsLoading(false);
+  }, [expandedUbic, zonas]);
+
   // computedCells — per-row, accumulates column values
   const computedCells=useMemo(()=>{
     const result:Record<string,Record<string,{value:number|null;formula:string|null;error:boolean;isGlobal:boolean}>>={};
-    const rowKey=(r:PickingRow)=>`${r.ubicacion}|${r.id_articulo}|${r.id_compania}`;
+    const rowKey=(r:PickingRow)=>r.ubicacion;  // Key = Ubicación (unique per location)
     const accum:Record<string,Record<string,number>>={};
     for(const r of rows)accum[rowKey(r)]={};
     for(const col of zonaColumnas){
@@ -195,7 +229,7 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
       const colToken=colNameToToken(col.nombre);
       const colFormula=col.formula?.trim();
       if(!colFormula){for(const r of rows){accum[rowKey(r)][colToken]=0;result[col.id][rowKey(r)]={value:null,formula:null,error:false,isGlobal:false};}continue;}
-      const hasRowVars=/\{(PCT_PICKING|CANT_MAX|CANT_MIN|ZONA_TOTAL|PCT_ZONA)\}/i.test(colFormula);
+      const hasRowVars=/\{(TOTAL_ARTICULOS|SUMA_CANT_MAX|SUMA_CANT_MIN|PCT_PICKING_PROM|ZONA_TOTAL|PCT_ZONA)\}/i.test(colFormula);
       if(!hasRowVars){
         const rv=evalFormula(colFormula,{...systemVarMap});
         const val=rv.ok?rv.value:null;
@@ -204,7 +238,7 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
         for(const r of rows){
           const k=rowKey(r);
           const cells=celdasFormulas[col.id]??[];
-          const cellFormula=cells.find(c=>c.ubicacion===r.ubicacion&&(!c.id_compania||c.id_compania===r.id_compania))?.formula??colFormula;
+          const cellFormula=cells.find(c=>c.ubicacion===r.ubicacion)?.formula??colFormula;
           const varMap={...buildRowVarMap(r),...accum[k]};
           const ev=evalFormula(cellFormula,varMap);
           const val=ev.ok?ev.value:null;
@@ -218,26 +252,28 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
 
   const footerTotals=useMemo(()=>{
     const t:Record<string,number>={};
-    const rowKey=(r:PickingRow)=>`${r.ubicacion}|${r.id_articulo}|${r.id_compania}`;
-    for(const col of zonaColumnas)t[col.id]=rows.reduce((s,r)=>{const c=computedCells[col.id]?.[rowKey(r)];return s+(!c?.isGlobal&&c?.value!=null?c.value:0);},0);
+    for(const col of zonaColumnas)t[col.id]=rows.reduce((s,r)=>{const c=computedCells[col.id]?.[r.ubicacion];return s+(!c?.isGlobal&&c?.value!=null?c.value:0);},0);
     return t;
   },[zonaColumnas,computedCells,rows]);
+
+  const totalArticulosZona = useMemo(() => rows.reduce((s,r)=>s+r.total_articulos, 0), [rows]);
 
   const filteredRows=useMemo(()=>{
     if(!deferredSearch)return rows;
     const q=deferredSearch.toLowerCase();
-    return rows.filter(r=>r.ubicacion.toLowerCase().includes(q)||r.id_articulo.toLowerCase().includes(q)||r.descripcion.toLowerCase().includes(q)||r.compania.toLowerCase().includes(q));
+    return rows.filter(r=>r.ubicacion.toLowerCase().includes(q)||r.companias.toLowerCase().includes(q));
   },[rows,deferredSearch]);
 
   const sortedRows=useMemo(()=>{
-    const rowKey=(r:PickingRow)=>`${r.ubicacion}|${r.id_articulo}|${r.id_compania}`;
+    const rowKey=(r:PickingRow)=>r.ubicacion;
     return [...filteredRows].sort((a,b)=>{
       const dir=artSortDir==='asc'?1:-1;
       if(artSortKey==='FIXED:ubicacion')return a.ubicacion.localeCompare(b.ubicacion)*dir;
-      if(artSortKey==='FIXED:id_articulo')return a.id_articulo.localeCompare(b.id_articulo)*dir;
-      if(artSortKey==='FIXED:pct_picking')return(a.pct_picking-b.pct_picking)*dir;
-      if(artSortKey==='FIXED:cant_max')return(a.cant_max-b.cant_max)*dir;
-      if(artSortKey==='FIXED:cant_min')return(a.cant_min-b.cant_min)*dir;
+      if(artSortKey==='FIXED:total_articulos')return(a.total_articulos-b.total_articulos)*dir;
+      if(artSortKey==='FIXED:pct_zona')return(a.total_articulos-b.total_articulos)*dir;
+      if(artSortKey==='FIXED:pct_picking_prom')return(a.pct_picking_promedio-b.pct_picking_promedio)*dir;
+      if(artSortKey==='FIXED:suma_cant_max')return(a.suma_cant_max-b.suma_cant_max)*dir;
+      if(artSortKey==='FIXED:suma_cant_min')return(a.suma_cant_min-b.suma_cant_min)*dir;
       const va=computedCells[artSortKey]?.[rowKey(a)]?.value??0;
       const vb=computedCells[artSortKey]?.[rowKey(b)]?.value??0;
       return(va-vb)*dir;
@@ -274,11 +310,10 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
     const colIdx=zonaColumnas.findIndex(c=>c.id===col.id);
     const prevCols=colIdx>0?zonaColumnas.slice(0,colIdx):[];
     const sampleRow=rows[0];
-    const rowKey=(r:PickingRow)=>`${r.ubicacion}|${r.id_articulo}|${r.id_compania}`;
     const prevColValues:Record<string,number>={};
-    prevCols.forEach(pc=>{if(sampleRow){const v=computedCells[pc.id]?.[rowKey(sampleRow)]?.value;if(v!=null)prevColValues[colNameToToken(pc.nombre)]=v;}});
+    prevCols.forEach(pc=>{if(sampleRow){const v=computedCells[pc.id]?.[sampleRow.ubicacion]?.value;if(v!=null)prevColValues[colNameToToken(pc.nombre)]=v;}});
     const enrichedVarMap=sampleRow?{...buildRowVarMap(sampleRow),...prevColValues}:{...systemVarMap,...prevColValues};
-    const columnTokens=prevCols.map(pc=>({token:colNameToToken(pc.nombre),label:pc.nombre,value:sampleRow?(computedCells[pc.id]?.[rowKey(sampleRow)]?.value??undefined):undefined}));
+    const columnTokens=prevCols.map(pc=>({token:colNameToToken(pc.nombre),label:pc.nombre,value:sampleRow?(computedCells[pc.id]?.[sampleRow.ubicacion]?.value??undefined):undefined}));
     setEditingColumnFormula({columnaId:col.id,colNombre:col.nombre,formula:col.formula??'',position:{top:rect.bottom+4,left:rect.left},columnTokens,enrichedVarMap});
   },[zonaColumnas,rows,computedCells,colNameToToken,buildRowVarMap,systemVarMap]);
 
@@ -307,9 +342,9 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2.5"><p className="text-xs text-violet-600">{zona_label}</p><p className="text-base font-bold text-violet-700">{fmt(rows.length)} ubicaciones</p></div>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">% Picking prom.</p><p className="text-base font-bold text-slate-700">{fmtDec(rows.length>0?rows.reduce((s,r)=>s+r.pct_picking,0)/rows.length:0)}%</p></div>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Artículos distintos</p><p className="text-base font-bold text-slate-700">{new Set(rows.map(r=>r.id_articulo)).size}</p></div>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Compañías</p><p className="text-base font-bold text-slate-700">{new Set(rows.map(r=>r.id_compania)).size}</p></div>
+        <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2.5"><p className="text-xs text-indigo-600">Total artículos</p><p className="text-base font-bold text-indigo-700">{fmt(totalArticulosZona)}</p></div>
+        <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-lg px-3 py-2.5"><p className="text-xs text-fuchsia-600">% Picking prom.</p><p className="text-base font-bold text-fuchsia-700">{fmtDec(rows.length>0?rows.reduce((s,r)=>s+r.pct_picking_promedio,0)/rows.length:0)}%</p></div>
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Máx.</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.suma_cant_max,0))}</p></div>
       </div>
 
       {/* Cluster manager */}
@@ -341,8 +376,8 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
                     {columnOrder.map(colKey=>{
                       if(colKey.startsWith('FIXED:')){
                         const key=colKey.slice(6);
-                        const hdr:Record<string,string>={ubicacion:'Ubicación',id_articulo:'Id Artículo',descripcion:'Descripción',compania:'Compañía',pct_picking:'% Picking',cant_max:'Cant. Máx.',cant_min:'Cant. Mín.',auto_reponer:'Auto Reponer'};
-                        const sortable=['pct_picking','cant_max','cant_min','ubicacion','id_articulo'].includes(key);
+                        const hdr:Record<string,string>={ubicacion:'Ubicación',total_articulos:'Artículos',pct_zona:'% Zona',pct_picking_prom:'% Pick. prom.',suma_cant_max:'Σ Cant. Máx.',suma_cant_min:'Σ Cant. Mín.',companias:'Compañías'};
+                        const sortable=['total_articulos','pct_zona','pct_picking_prom','suma_cant_max','suma_cant_min','ubicacion'].includes(key);
                         return<SortableFixedHeader key={colKey} id={colKey} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 bg-slate-50">
                           {sortable?<span onClick={()=>toggleSort(`FIXED:${key}`)} className="cursor-pointer hover:text-slate-700 flex items-center gap-1">{hdr[key]??key}<i className={`${sortIcon(`FIXED:${key}`)} ml-0.5`}/></span>:<span>{hdr[key]??key}</span>}
                         </SortableFixedHeader>;
@@ -367,21 +402,33 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
               <tbody>
                 {paginatedRows.length===0?<tr><td colSpan={columnOrder.length+1} className="px-3 py-10 text-center text-slate-400">{search?'Sin resultados':'Sin datos'}</td></tr>
                 :paginatedRows.map((row,ai)=>{
-                  const rKey=`${row.ubicacion}|${row.id_articulo}|${row.id_compania}`;
+                  const rKey = row.ubicacion;
+                  const isExpanded = expandedUbic === row.ubicacion;
                   return(
-                    <tr key={rKey} className={`border-t border-slate-100 hover:bg-violet-50/40 ${ai%2===0?'bg-white':'bg-slate-50/30'}`}>
+                    <React.Fragment key={rKey}>
+                    <tr className={`border-t border-slate-100 hover:bg-violet-50/40 ${isExpanded?'bg-violet-50':'ai%2===0?bg-white:bg-slate-50/30'} ${ai%2===0?'bg-white':'bg-slate-50/30'}`}>
                       {columnOrder.map(colKey=>{
                         if(colKey.startsWith('FIXED:')){
                           const key=colKey.slice(6);
                           switch(key){
                             case 'ubicacion':    return<td key={colKey} className="px-3 py-2 font-mono font-medium text-slate-700 border-r border-slate-100 text-[11px]">{row.ubicacion||'—'}</td>;
-                            case 'id_articulo':  return<td key={colKey} className="px-3 py-2 font-medium text-slate-700 border-r border-slate-100">{row.id_articulo||'—'}</td>;
-                            case 'descripcion':  return<td key={colKey} className="px-3 py-2 text-slate-600 border-r border-slate-100 max-w-[240px] overflow-hidden text-ellipsis" title={row.descripcion}>{row.descripcion||'—'}</td>;
-                            case 'compania':     return<td key={colKey} className="px-3 py-2 text-slate-500 border-r border-slate-100">{row.compania||row.id_compania||'—'}</td>;
-                            case 'pct_picking':  return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><div className="flex items-center justify-end gap-2"><div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{width:`${Math.min(row.pct_picking,100)}%`}}/></div><span className="text-violet-700 font-semibold w-10 text-right">{fmtDec(row.pct_picking)}%</span></div></td>;
-                            case 'cant_max':     return<td key={colKey} className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(row.cant_max)}</td>;
-                            case 'cant_min':     return<td key={colKey} className="px-3 py-2 text-right text-slate-500 border-r border-slate-100">{fmt(row.cant_min)}</td>;
-                            case 'auto_reponer': return<td key={colKey} className="px-3 py-2 text-center border-r border-slate-100">{row.auto_reponer?<span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${row.auto_reponer.toLowerCase()==='si'||row.auto_reponer==='1'||row.auto_reponer.toLowerCase()==='true'?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-500'}`}>{row.auto_reponer}</span>:'—'}</td>;
+                            case 'total_articulos':  {
+                              const pctZ = totalArticulosZona > 0 ? (row.total_articulos/totalArticulosZona)*100 : 0;
+                              return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100">
+                                <div className="flex items-center justify-end gap-2">
+                                  <button onClick={()=>loadUbicArticulos(row.ubicacion)} className="text-[10px] px-1.5 py-0.5 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded cursor-pointer" title="Ver artículos de esta ubicación"><i className="ri-arrow-down-s-line"/></button>
+                                  <span className="font-bold text-indigo-700 text-sm">{fmt(row.total_articulos)}</span>
+                                </div>
+                              </td>;
+                            }
+                            case 'pct_zona': {
+                              const pZ = totalArticulosZona > 0 ? (row.total_articulos/totalArticulosZona)*100 : 0;
+                              return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><div className="flex items-center justify-end gap-2"><div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{width:`${Math.min(pZ,100)}%`}}/></div><span className="text-violet-700 font-semibold w-10 text-right">{pZ.toFixed(2)}%</span></div></td>;
+                            }
+                            case 'pct_picking_prom': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-fuchsia-600 font-medium">{fmtDec(row.pct_picking_promedio)}%</span></td>;
+                            case 'suma_cant_max':    return<td key={colKey} className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(row.suma_cant_max)}</td>;
+                            case 'suma_cant_min':    return<td key={colKey} className="px-3 py-2 text-right text-slate-500 border-r border-slate-100">{fmt(row.suma_cant_min)}</td>;
+                            case 'companias':       return<td key={colKey} className="px-3 py-2 text-slate-500 border-r border-slate-100 max-w-[180px] overflow-hidden text-ellipsis" title={row.companias}>{row.companias||'—'}</td>;
                             default:return null;
                           }
                         }else{
@@ -399,6 +446,45 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
                       })}
                       <td className="px-1 py-2"/>
                     </tr>
+                    {/* Drill-down: articles in this location */}
+                    {isExpanded && (
+                      <tr key={`${rKey}_detail`} className="bg-indigo-50/80 border-b border-indigo-100">
+                        <td colSpan={columnOrder.length + 1} className="px-4 py-2">
+                          {ubicArtsLoading ? (
+                            <div className="flex items-center gap-2 py-2"><div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"/><span className="text-xs text-slate-500">Cargando artículos...</span></div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <p className="text-xs font-semibold text-indigo-700 mb-1.5"><i className="ri-map-pin-line mr-1"/>{row.ubicacion} — {ubicArticulos.length} artículos</p>
+                              <div className="overflow-auto max-h-48">
+                                <table className="text-[11px] w-full bg-white rounded-lg border border-indigo-100 overflow-hidden">
+                                  <thead><tr className="bg-indigo-100">
+                                    <th className="px-2 py-1.5 text-left text-indigo-700 font-semibold border-r border-indigo-200">Id Artículo</th>
+                                    <th className="px-2 py-1.5 text-left text-indigo-700 font-semibold border-r border-indigo-200">Descripción</th>
+                                    <th className="px-2 py-1.5 text-right text-indigo-700 font-semibold border-r border-indigo-200">% Pick.</th>
+                                    <th className="px-2 py-1.5 text-right text-indigo-700 font-semibold border-r border-indigo-200">Cant. Máx.</th>
+                                    <th className="px-2 py-1.5 text-right text-indigo-700 font-semibold border-r border-indigo-200">Cant. Mín.</th>
+                                    <th className="px-2 py-1.5 text-left text-indigo-700 font-semibold">Compañía</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {ubicArticulos.map(a => (
+                                      <tr key={a.id_articulo+a.id_compania} className="border-t border-indigo-50 hover:bg-indigo-50/50">
+                                        <td className="px-2 py-1 font-medium text-slate-700 border-r border-indigo-100">{a.id_articulo}</td>
+                                        <td className="px-2 py-1 text-slate-600 border-r border-indigo-100 max-w-[200px] overflow-hidden text-ellipsis" title={a.descripcion}>{a.descripcion||'—'}</td>
+                                        <td className="px-2 py-1 text-right text-violet-600 font-medium border-r border-indigo-100">{fmtDec(a.pct_picking)}%</td>
+                                        <td className="px-2 py-1 text-right text-slate-600 border-r border-indigo-100">{fmt(a.cant_max)}</td>
+                                        <td className="px-2 py-1 text-right text-slate-500 border-r border-indigo-100">{fmt(a.cant_min)}</td>
+                                        <td className="px-2 py-1 text-slate-500">{a.compania||a.id_compania||'—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -410,8 +496,11 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
                         const key=colKey.slice(6);
                         switch(key){
                           case 'ubicacion':   return<td key={colKey} className="px-3 py-2 font-semibold text-slate-600 border-r border-slate-100 text-xs">{filteredRows.length} ubicaciones</td>;
-                          case 'pct_picking': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-700">{fmtDec(filteredRows.length>0?filteredRows.reduce((s,r)=>s+r.pct_picking,0)/filteredRows.length:0)}% prom.</span></td>;
-                          case 'cant_max':    return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(filteredRows.reduce((s,r)=>s+r.cant_max,0))}</span></td>;
+                          case 'total_articulos': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-indigo-700">{fmt(filteredRows.reduce((s,r)=>s+r.total_articulos,0))}</span></td>;
+                          case 'pct_zona':    return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-600">100%</span></td>;
+                          case 'pct_picking_prom': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-fuchsia-600">{fmtDec(filteredRows.length>0?filteredRows.reduce((s,r)=>s+r.pct_picking_promedio,0)/filteredRows.length:0)}%</span></td>;
+                          case 'suma_cant_max': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(filteredRows.reduce((s,r)=>s+r.suma_cant_max,0))}</span></td>;
+                          case 'suma_cant_min': return<td key={colKey} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-500">{fmt(filteredRows.reduce((s,r)=>s+r.suma_cant_min,0))}</span></td>;
                           default:return<td key={colKey} className="px-2 py-2 border-r border-slate-100"/>;
                         }
                       }else{
