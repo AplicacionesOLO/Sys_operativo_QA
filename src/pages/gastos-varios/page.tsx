@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import { cascadeRenameTokens, gvConceptoRenamePairs } from '@/lib/formulaTokenRename';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import type { GastoVarioFila, TipoFila } from '@/types/gastos_varios';
 import type { FormulaConfig } from '@/types/costos';
 import EstadoFinancieroTable from './components/EstadoFinancieroTable';
@@ -85,13 +86,18 @@ export default function GastosVariosPage() {
     field: string,
     value: string | number | null
   ) => {
-    // Cascade-rename GV_* tokens if concepto changes
-    if (field === 'concepto' && value !== null) {
-      const oldFila = filas.find(f => f.id === id);
-      if (oldFila && oldFila.concepto !== String(value)) {
-        cascadeRenameTokens(gvConceptoRenamePairs(oldFila.concepto, String(value)));
-      }
+    const oldFila = filas.find(f => f.id === id);
+    if (field === 'concepto' && value !== null && oldFila && oldFila.concepto !== String(value)) {
+      cascadeRenameTokens(gvConceptoRenamePairs(oldFila.concepto, String(value)));
     }
+    logChange({
+      modulo: 'gastos-varios', accion: 'update_gasto',
+      entidad_tipo: 'gastos_varios', entidad_id: id,
+      entidad_label: oldFila?.concepto ?? id,
+      campo: field,
+      valor_antes: oldFila ? (field === 'concepto' ? oldFila.concepto : (oldFila.valores as Record<string,unknown>)?.[field] ?? null) : null,
+      valor_despues: value,
+    });
     setSavingId(id);
     setFilas(prev =>
       prev.map(f => {

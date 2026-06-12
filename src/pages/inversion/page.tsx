@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import AppLayout from '../../components/feature/AppLayout';
 import { supabase, isSupabaseReady } from '../../lib/supabase';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import type { InversionRecord } from '../../types/inversion';
 import { calcularInversion } from '../../types/inversion';
 import InversionSummary from './components/InversionSummary';
@@ -62,6 +63,7 @@ export default function InversionPage() {
   }, []);
 
   const updateRow = useCallback(async (id: string, changes: Partial<InversionRecord>) => {
+    const old = records.find(r => r.id === id);
     setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...changes } : r)));
 
     if (isSupabaseReady && supabase) {
@@ -69,6 +71,13 @@ export default function InversionPage() {
       try {
         await supabase.from('inversiones').update(changes).eq('id', id);
         invalidateBaseCache();
+        logChange({
+          modulo: 'inversiones', accion: 'update_inversion',
+          entidad_id: id, entidad_label: old?.nombre,
+          campo: Object.keys(changes).join(', '),
+          valor_antes: old ? Object.fromEntries(Object.keys(changes).map(k => [k, (old as unknown as Record<string,unknown>)[k]])) : null,
+          valor_despues: changes,
+        });
       } finally {
         setSaving((prev) => {
           const s = new Set(prev);
@@ -80,12 +89,14 @@ export default function InversionPage() {
   }, []);
 
   const deleteRow = useCallback(async (id: string) => {
+    const old = records.find(r => r.id === id);
     setRecords((prev) => prev.filter((r) => r.id !== id));
     if (isSupabaseReady && supabase) {
       await supabase.from('inversiones').delete().eq('id', id);
       invalidateBaseCache();
+      logChange({ modulo: 'inversiones', accion: 'delete_inversion', entidad_id: id, entidad_label: old?.nombre, valor_antes: old });
     }
-  }, []);
+  }, [records]);
 
   const calculated = records.map(calcularInversion);
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import AppLayout from '@/components/feature/AppLayout';
 import BulkUploadModal from '@/components/feature/BulkUploadModal';
 import type { ManoObraFila, ModuloColumna, ColumnType } from '@/types/mano_obra';
@@ -134,12 +135,21 @@ export default function ManoObraPage() {
   };
 
   const handleUpdateFila = useCallback(async (id: string, field: string, value: string) => {
+    const fila = filas.find(f => f.id === id);
+    logChange({
+      modulo: 'mano-obra', accion: 'update_row',
+      entidad_tipo: 'mano_obra', entidad_id: id,
+      entidad_label: fila?.nombre ?? id,
+      campo: field,
+      valor_antes: fila ? (fila as unknown as Record<string, unknown>)[field] ?? null : null,
+      valor_despues: value,
+    });
     setSavingId(id);
     setFilas(prev => prev.map(f => f.id === id ? { ...f, [field]: value } : f));
     await supabase.from('mano_obra').update({ [field]: value }).eq('id', id);
     invalidateBaseCache();
     setSavingId(null);
-  }, []);
+  }, [filas]);
 
   const handleUpdateCell = useCallback(async (id: string, columnaId: string, value: string | number, sensitive: boolean) => {
     setSavingId(id);

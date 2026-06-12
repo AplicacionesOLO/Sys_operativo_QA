@@ -6,6 +6,7 @@ import ZonasTab from './components/ZonasTab';
 import { supabase, isSupabaseReady } from '../../lib/supabase';
 import { cascadeRenameTokens, areaRenamePairs } from '@/lib/formulaTokenRename';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import type { Area, TipoArea, Zona } from '../../types/areas';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, calcularFormula } from '@/lib/formulaEngine';
@@ -158,7 +159,11 @@ export default function AreasPage() {
   // --- Areas CRUD ---
   const addArea = async (data: Omit<Area, 'id' | 'created_at'>) => {
     const { error: err } = await supabase.from('areas').insert(data);
-    if (!err) { invalidateBaseCache(); fetchAll(); }
+    if (!err) {
+      invalidateBaseCache();
+      logChange({ modulo: 'areas', accion: 'add_area', entidad_label: data.nombre, valor_despues: { nombre: data.nombre, metros_cuadrados: data.metros_cuadrados } });
+      fetchAll();
+    }
   };
 
   const editArea = async (id: string, data: Omit<Area, 'id' | 'created_at'>) => {
@@ -169,14 +174,25 @@ export default function AreasPage() {
         cascadeRenameTokens(areaRenamePairs(oldArea.nombre, data.nombre));
       }
       invalidateBaseCache();
+      logChange({
+        modulo: 'areas', accion: 'update_area',
+        entidad_id: id, entidad_label: data.nombre,
+        valor_antes: oldArea ? { nombre: oldArea.nombre, metros_cuadrados: oldArea.metros_cuadrados, metros_cubicos: oldArea.metros_cubicos, cantidad_racks: oldArea.cantidad_racks } : null,
+        valor_despues: { nombre: data.nombre, metros_cuadrados: data.metros_cuadrados, metros_cubicos: data.metros_cubicos, cantidad_racks: data.cantidad_racks },
+      });
       fetchAll();
     }
   };
 
   const deleteArea = async (id: string) => {
+    const oldArea = areas.find(a => a.id === id);
     await supabase.from('areas').update({ parent_id: null }).eq('parent_id', id);
     const { error: err } = await supabase.from('areas').delete().eq('id', id);
-    if (!err) { invalidateBaseCache(); fetchAll(); }
+    if (!err) {
+      invalidateBaseCache();
+      logChange({ modulo: 'areas', accion: 'delete_area', entidad_id: id, entidad_label: oldArea?.nombre, valor_antes: oldArea ? { nombre: oldArea.nombre } : null });
+      fetchAll();
+    }
   };
 
   const tabs: { id: Tab; label: string; icon: string; count: number }[] = [

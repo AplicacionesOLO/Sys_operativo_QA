@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import type { VolDistribucion } from '@/types/vol_distribucion';
 import { cascadeRenameTokens, volDistRenamePairs } from '@/lib/formulaTokenRename';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 import { COLOR_CONFIG } from '@/types/vol_distribucion';
 import VolDistribucionChart from './components/VolDistribucionChart';
 import VolDistribucionTotal from './components/VolDistribucionTotal';
@@ -99,12 +100,22 @@ export default function VolDistribucionPage() {
   }, []);
 
   const handleUpdate = useCallback((id: string, fields: Partial<VolDistribucion>) => {
-    // Cascade-rename VOLDIST_* tokens if nombre changes
-    if (fields.nombre !== undefined) {
-      const oldItem = items.find(i => i.id === id);
-      if (oldItem && oldItem.nombre !== fields.nombre) {
-        cascadeRenameTokens(volDistRenamePairs(oldItem.nombre, fields.nombre));
-      }
+    const oldItem = items.find(i => i.id === id);
+    if (fields.nombre !== undefined && oldItem && oldItem.nombre !== fields.nombre) {
+      cascadeRenameTokens(volDistRenamePairs(oldItem.nombre, fields.nombre));
+    }
+    const oldRecord = oldItem as unknown as Record<string,unknown>;
+    const newRecord = fields as unknown as Record<string,unknown>;
+    const changedFields = Object.keys(fields).filter(k => oldRecord?.[k] !== newRecord[k]);
+    if (changedFields.length > 0) {
+      logChange({
+        modulo: 'vol-distribucion', accion: 'update_segmento',
+        entidad_tipo: 'volumen_distribucion', entidad_id: id,
+        entidad_label: oldItem?.nombre ?? id,
+        campo: changedFields.join(', '),
+        valor_antes: oldItem ? Object.fromEntries(changedFields.map(k => [k, oldRecord[k]])) : null,
+        valor_despues: Object.fromEntries(changedFields.map(k => [k, newRecord[k]])),
+      });
     }
     setItems(prev => prev.map(i => i.id === id ? { ...i, ...fields } : i));
     debouncedSave(id, fields);

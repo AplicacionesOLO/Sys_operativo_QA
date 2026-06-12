@@ -4,6 +4,7 @@ import AppLayout from '@/components/feature/AppLayout';
 import type { Factor } from '@/types/factores';
 import { cascadeRenameTokens, factorRenamePairs } from '@/lib/formulaTokenRename';
 import { invalidateBaseCache } from '@/lib/formulaBaseCache';
+import { logChange } from '@/lib/auditLog';
 
 interface FactorModalState {
   open: boolean;
@@ -54,12 +55,20 @@ export default function FactoresPage() {
     const payload = { nombre: nombre.trim(), valor: v, descripcion: descripcion.trim() || null };
     if (modal.editing) {
       await supabase.from('factores').update(payload).eq('id', modal.editing.id);
-      // Cascade-rename FACTOR_* tokens if nombre changed
       if (nombre.trim() !== modal.editing.nombre) {
         cascadeRenameTokens(factorRenamePairs(modal.editing.nombre, nombre.trim()));
       }
+      logChange({
+        modulo: 'factores', accion: 'update_factor',
+        entidad_tipo: 'factores', entidad_id: modal.editing.id,
+        entidad_label: modal.editing.nombre,
+        campo: nombre.trim() !== modal.editing.nombre ? 'nombre' : 'valor',
+        valor_antes: { nombre: modal.editing.nombre, valor: modal.editing.valor },
+        valor_despues: payload,
+      });
     } else {
       await supabase.from('factores').insert(payload);
+      logChange({ modulo: 'factores', accion: 'add_factor', entidad_label: nombre.trim(), valor_despues: payload });
     }
     invalidateBaseCache(); // force fresh data on next formula module load
     setSaving(false);
@@ -69,8 +78,10 @@ export default function FactoresPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('¿Eliminar este factor?')) return;
+    const factor = factores.find(f => f.id === id);
     await supabase.from('factores').delete().eq('id', id);
     invalidateBaseCache();
+    logChange({ modulo: 'factores', accion: 'delete_factor', entidad_id: id, entidad_label: factor?.nombre, valor_antes: factor });
     setFactores(prev => prev.filter(f => f.id !== id));
   };
 
