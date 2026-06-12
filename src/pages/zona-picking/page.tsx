@@ -575,6 +575,9 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const PAGE = 200;
   // Slot stats cross-reference: ubicacion → {total, libres, bloqueados, tipo_ubicacion, dimension}
   const [slotStats, setSlotStats] = useState<Record<string,{total:number;libres:number;bloqueados:number;reservados:number;pct_libres:number;tipo_ubicacion:string;dimension:string;zona_almacenaje:string}>>({});
+  // Computed slot costs from Costos de Slots module: ubicacion → {colId: value}
+  const [slotCostos, setSlotCostos] = useState<Record<string, Record<string, number>>>({});
+  const [slotCostoCols, setSlotCostoCols] = useState<{id:string;nombre:string;formula:string}[]>([]);
   // Formula columns
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
   const [addingCol, setAddingCol] = useState(false);
@@ -589,10 +592,12 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     const params = activeZonas.length > 1
       ? { p_zonas: activeZonas, p_offset: 0, p_limit: 9999 }
       : { p_zona: activeZonas[0], p_offset: 0, p_limit: 9999 };
-    Promise.all([
+    (async () => {
+    const [{data: rpcData}, {data: cols}] = await Promise.all([
       supabase.rpc(rpc, params),
       supabase.from('zona_picking_distribucion_columnas').select('*').order('orden'),
-    ]).then(([{data: rpcData}, {data: cols}]) => {
+    ]);
+    {
       // RPC already returns cleaned numeric values
       const mapped: DistribRow[] = ((rpcData ?? []) as any[]).map((r: any) => ({
         ubicacion: String(r.ubicacion ?? ''),
@@ -619,26 +624,65 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       setUbicMap(ubMap);
       setColumnas((cols ?? []) as DistribCol[]);
 
-      // Load slot stats for cross-reference by Ubicación code
+      // Load slot stats + compute slot costs from Costos de Slots module
       const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicaciones.length > 0) {
-        supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones }).then(({ data: sData }) => {
-          const sMap: Record<string, any> = {};
-          for (const s of (sData ?? []) as any[]) {
-            sMap[String(s.ubicacion ?? '')] = {
-              total: Number(s.total) || 0, libres: Number(s.libres) || 0,
-              bloqueados: Number(s.bloqueados) || 0, reservados: Number(s.reservados) || 0,
-              pct_libres: Number(s.pct_libres) || 0,
-              tipo_ubicacion: String(s.tipo_ubicacion ?? ''),
-              dimension: String(s.dimension ?? ''),
-              zona_almacenaje: String(s.zona_almacenaje ?? ''),
-            };
+        // Step 1: get tipo/dim/zona per ubicacion
+        const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones });
+        const sMap: Record<string, any> = {};
+        for (const s of (sData ?? []) as any[]) {
+          sMap[String(s.ubicacion ?? '')] = {
+            total: Number(s.total)||0, libres: Number(s.libres)||0,
+            bloqueados: Number(s.bloqueados)||0, reservados: Number(s.reservados)||0,
+            pct_libres: Number(s.pct_libres)||0,
+            tipo_ubicacion: String(s.tipo_ubicacion??''), dimension: String(s.dimension??''), zona_almacenaje: String(s.zona_almacenaje??''),
+          };
+        }
+        setSlotStats(sMap);
+
+        // Step 2: get tipo/dim group aggregations for accurate formula variables
+        const zonasAlmacenaje = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
+        const [{ data: tdStats }, { data: slotCols }] = await Promise.all([
+          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlmacenaje }),
+          supabase.from('costos_slots_zona_columnas').select('id, nombre, formula, zona').not('formula', 'is', null),
+        ]);
+
+        // Build tipo/dim stats map: "zona|tipo|dim" → stats
+        const tdMap: Record<string, any> = {};
+        for (const td of (tdStats ?? []) as any[]) {
+          const k = `${td.zona_almacenaje}|${td.tipo_ubicacion}|${td.dimension}`;
+          tdMap[k] = { total:Number(td.total)||0, libres:Number(td.libres)||0, bloqueados:Number(td.bloqueados)||0, reservados:Number(td.reservados)||0, otros:Number(td.otros)||0, zona_total:Number(td.zona_total)||0, pct_zona:Number(td.pct_zona)||0, pct_libres:Number(td.pct_libres)||0 };
+        }
+
+        // Step 3: evaluate each formula column for each Ubicación
+        const validCols = ((slotCols ?? []) as any[]).filter((c:any) => c.formula?.trim());
+        setSlotCostoCols(validCols.map((c:any) => ({ id: String(c.id), nombre: String(c.nombre), formula: String(c.formula) })));
+
+        const cosMap: Record<string, Record<string, number>> = {};
+        for (const ubic of ubicaciones) {
+          const st = sMap[ubic];
+          if (!st) continue;
+          const groupKey = `${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`;
+          const td = tdMap[groupKey];
+          if (!td) continue;
+          // Build var map — same tokens as Costos de Slots ZonaDetailTable
+          const varMap = {
+            TOTAL: td.total, LIBRES: td.libres, BLOQUEADOS: td.bloqueados,
+            RESERVADOS: td.reservados, OTROS: td.otros,
+            ZONA_TOTAL: td.zona_total, PCT_ZONA: td.pct_zona, PCT_LIBRES: td.pct_libres,
+            // Also include system vars from formulaCtx
+          };
+          cosMap[ubic] = {};
+          for (const col of validCols) {
+            const ev = evalFormula(String(col.formula), varMap);
+            cosMap[ubic][String(col.id)] = ev.ok ? ev.value : 0;
           }
-          setSlotStats(sMap);
-        });
+        }
+        setSlotCostos(cosMap);
       }
       setLoading(false);
-    });
+    }
+    })(); // end async IIFE
   }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const zonas = useMemo(() => [...new Set(rows.map(r => r.zona_picking).filter(Boolean))].sort(), [rows]);
@@ -729,6 +773,13 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       if (sortKey === 'pct_picking') return (a.pct_picking - b.pct_picking) * dir;
       if (sortKey === 'cant_max')    return (a.cant_max - b.cant_max) * dir;
       if (sortKey === 'cant_min')    return (a.cant_min - b.cant_min) * dir;
+      // Slot cost column sort
+      if (sortKey.startsWith('SLOT:')) {
+        const slotColId = sortKey.slice(5);
+        const va = slotCostos[a.ubicacion]?.[slotColId] ?? 0;
+        const vb = slotCostos[b.ubicacion]?.[slotColId] ?? 0;
+        return (va - vb) * dir;
+      }
       // Formula column sort — find column by id and compare computed values
       const matchedCol = columnas.find(c => c.id === sortKey);
       if (matchedCol) {
@@ -752,8 +803,9 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
         <p className="text-sm font-semibold text-indigo-800">Distribución Slot Prime — artículos individuales de la zona seleccionada</p>
         <p className="text-xs text-indigo-500 mt-0.5">
-          Responde al cluster/zona activo · <code className="bg-indigo-100 px-1 rounded">{'{TOTAL_ARTICULOS}'}</code> artículos en misma ubicación ·
-          <code className="bg-indigo-100 px-1 rounded ml-1">{'{PCT_PICKING}'}</code> · <code className="bg-indigo-100 px-1 rounded ml-1">{'{CANT_MAX}'}</code> + variables del sistema
+          Variables de artículo: <code className="bg-indigo-100 px-1 rounded">{'{PCT_PICKING}'}</code> <code className="bg-indigo-100 px-1 rounded ml-1">{'{CANT_MAX}'}</code> ·
+          Variables de slot: <code className="bg-indigo-100 px-1 rounded ml-1">{'{SLOT_TOTAL}'}</code> <code className="bg-indigo-100 px-1 rounded ml-1">{'{SLOT_LIBRES}'}</code> ·
+          {slotCostoCols.length > 0 && <span className="ml-1 text-emerald-600 font-medium">{slotCostoCols.length} columna(s) de costo desde Costos de Slots</span>}
         </p>
       </div>
 
@@ -820,6 +872,9 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Cant. Mín.</th>
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artíc./Ubic.</th>
                 <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Compañía</th>
+                {/* Slot cost columns from Costos de Slots — matched by Ubicación code */}
+                {slotCostoCols.map(col => <th key={col.id} onClick={()=>toggleSort(`SLOT:${col.id}`)} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-emerald-100 bg-emerald-50 text-emerald-700`} title={`Fórmula (Costos de Slots): ${col.formula}`}><i className="ri-stack-line text-[10px] mr-1"/>{col.nombre} <i className={`ml-0.5 ${si(`SLOT:${col.id}`)}`}/></th>)}
+                {/* Custom formula columns */}
                 {columnas.map(col => <th key={col.id} onClick={()=>toggleSort(col.id)} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 ${col.formula?'bg-indigo-50 text-indigo-600':'text-slate-400'}`}>{col.nombre}{col.formula&&<span className="ml-1 text-[9px] bg-indigo-200 text-indigo-700 px-1 rounded font-mono">fx</span>} <i className={`ml-0.5 ${si(col.id)}`}/></th>)}
               </tr>
             </thead>
@@ -842,6 +897,13 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                   <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{row.cant_min.toLocaleString('es-CO')}</td>
                   <td className="px-3 py-1.5 text-right text-indigo-600 font-semibold border-r border-slate-100">{fmt(ubicMap[row.ubicacion]?.total_articulos ?? 0)}</td>
                   <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{row.compania || '—'}</td>
+                  {/* Slot cost cells from Costos de Slots module */}
+                  {slotCostoCols.map(col => {
+                    const val = slotCostos[row.ubicacion]?.[col.id];
+                    return <td key={`slot_${col.id}`} className="px-3 py-1.5 text-right border-r border-slate-100 bg-emerald-50/30" title={`${col.nombre} (Costos de Slots)`}>
+                      {val != null ? <span className="text-emerald-700 font-bold tabular-nums">{new Intl.NumberFormat('es-CO',{minimumFractionDigits:2,maximumFractionDigits:2}).format(val)}</span> : <span className="text-slate-200 text-[10px]">—</span>}
+                    </td>;
+                  })}
                   {columnas.map(col => {
                     const k = row.ubicacion+'|'+row.id_articulo;
                     const cell = computedCols[col.id]?.[k];
@@ -861,7 +923,13 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                   <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-700">{fmtDec(filtered.length > 0 ? filtered.reduce((s,r)=>s+r.pct_picking,0)/filtered.length : 0)}% prom.</span></td>
                   <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{filtered.reduce((s,r)=>s+r.cant_max,0).toLocaleString('es-CO')}</span></td>
                   <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-500">{filtered.reduce((s,r)=>s+r.cant_min,0).toLocaleString('es-CO')}</span></td>
-                  <td className="px-3 py-2"/>
+                  <td className="px-3 py-2 border-r border-slate-100"/>
+                  {/* Slot cost totals */}
+                  {slotCostoCols.map(col => {
+                    const total = filtered.reduce((s,r) => s + (slotCostos[r.ubicacion]?.[col.id] ?? 0), 0);
+                    return <td key={`sf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100 bg-emerald-50/40"><span className="text-xs font-bold text-emerald-700 tabular-nums">{new Intl.NumberFormat('es-CO',{minimumFractionDigits:2,maximumFractionDigits:2}).format(total)}</span></td>;
+                  })}
+                  {columnas.map(col => { const t = filtered.reduce((s,r) => s+(computedCols[col.id]?.[r.ubicacion+'|'+r.id_articulo]?.value??0),0); return <td key={`cf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-indigo-700">{new Intl.NumberFormat('es-CO',{minimumFractionDigits:2,maximumFractionDigits:2}).format(t)}</span></td>; })}
                 </tr>
               </tfoot>
             )}
