@@ -477,7 +477,7 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
   const [colLoading, setColLoading] = useState(false);
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColName, setNewColName] = useState('');
-  const [editingColumnFormula, setEditingColumnFormula] = useState<{ columnaId: string; colNombre: string; formula: string; position: { top: number; left: number } } | null>(null);
+  const [editingColumnFormula, setEditingColumnFormula] = useState<{ columnaId: string; colNombre: string; formula: string; position: { top: number; left: number }; columnTokens: { token: string; label: string; value?: number }[]; enrichedVarMap: Record<string, number> } | null>(null);
   const [colOrder, setColOrder] = useState<string[]>([]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -613,30 +613,57 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
   }, [getArtPromedios, zoneTotalMov, zoneTotalUnid, sumAllPromMovArts, sumAllPromUnidArts, systemVarMap]);
 
   // Computed cells per column per article
+  // Sanitize a column name to a valid token key (same pattern as formulaVariables)
+  const colNameToToken = useCallback((nombre: string) =>
+    nombre.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase(), []);
+
   const computedCells = useMemo(() => {
     const result: Record<string, Record<string, { value: number | null; formula: string | null; error: boolean; isGlobal: boolean }>> = {};
+    // Per-article accumulator: token → value (enables cross-column references)
+    const artAccum: Record<string, Record<string, number>> = {};
+    for (const art of activeZoneArtsAll) {
+      artAccum[`${art.idCompania}|${art.articulo}`] = {};
+    }
+
     for (const col of zonaColumnas) {
       result[col.id] = {};
+      const colToken = colNameToToken(col.nombre);
       const colFormula = col.formula?.trim();
-      if (!colFormula) continue;
-      const hasRowVars = /\{(MOV|UNID|PCT_MOV|PCT_UNID|PROM_MOV_MES|PROM_UNID_MES|PCT_PROM_MOV_MES|PCT_PROM_UNID_MES|ZONA_MOV|ZONA_UNID)\}/i.test(colFormula);
-      if (!hasRowVars) {
-        const r = evalFormula(colFormula, systemVarMap);
+
+      if (!colFormula) {
         for (const art of activeZoneArtsAll) {
-          result[col.id][art.articulo] = { value: r.ok ? r.value : null, formula: colFormula, error: !r.ok, isGlobal: true };
+          artAccum[`${art.idCompania}|${art.articulo}`][colToken] = 0;
+          result[col.id][art.articulo] = { value: null, formula: null, error: false, isGlobal: false };
+        }
+        continue;
+      }
+
+      const hasRowVars = /\{(MOV|UNID|PCT_MOV|PCT_UNID|PROM_MOV_MES|PROM_UNID_MES|PCT_PROM_MOV_MES|PCT_PROM_UNID_MES|ZONA_MOV|ZONA_UNID)\}/i.test(colFormula);
+
+      if (!hasRowVars) {
+        // Global formula — same result for all rows (no row-level vars)
+        const r = evalFormula(colFormula, { ...systemVarMap });
+        const val = r.ok ? r.value : null;
+        for (const art of activeZoneArtsAll) {
+          artAccum[`${art.idCompania}|${art.articulo}`][colToken] = val ?? 0;
+          result[col.id][art.articulo] = { value: val, formula: colFormula, error: !r.ok, isGlobal: true };
         }
       } else {
         for (const art of activeZoneArtsAll) {
+          const k = `${art.idCompania}|${art.articulo}`;
           const cells = celdasFormulas[col.id] ?? [];
           const cellFormula = cells.find(c => c.articulo === art.articulo && (!c.id_compania || c.id_compania === art.idCompania))?.formula ?? colFormula;
-          const varMap = buildRowVarMap(art);
+          // varMap includes base article vars + all previously-computed column values
+          const varMap = { ...buildRowVarMap(art), ...artAccum[k] };
           const r = evalFormula(cellFormula, varMap);
-          result[col.id][art.articulo] = { value: r.ok ? r.value : null, formula: cellFormula, error: !r.ok, isGlobal: false };
+          const val = r.ok ? r.value : null;
+          artAccum[k][colToken] = val ?? 0;
+          result[col.id][art.articulo] = { value: val, formula: cellFormula, error: !r.ok, isGlobal: false };
         }
       }
     }
     return result;
-  }, [zonaColumnas, celdasFormulas, activeZoneArtsAll, buildRowVarMap, systemVarMap]);
+  }, [zonaColumnas, celdasFormulas, activeZoneArtsAll, buildRowVarMap, systemVarMap, colNameToToken]);
 
   // Footer totals per dynamic column
   const footerTotals = useMemo(() => {
@@ -717,8 +744,26 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
 
   const handleOpenColumnFormulaEditor = useCallback((col: MovimientosZonaColumnaDinamica, e: React.MouseEvent) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setEditingColumnFormula({ columnaId: col.id, colNombre: col.nombre, formula: col.formula ?? '', position: { top: rect.bottom + 4, left: rect.left } });
-  }, []);
+    // Build list of ALL previous columns (before this one) as available tokens
+    const colIdx = zonaColumnas.findIndex(c => c.id === col.id);
+    const prevCols = colIdx > 0 ? zonaColumnas.slice(0, colIdx) : [];
+    const sampleArt = activeZoneArtsAll[0];
+    const columnTokens = prevCols.map(pc => ({
+      token: colNameToToken(pc.nombre),
+      label: pc.nombre,
+      value: sampleArt ? (computedCells[pc.id]?.[sampleArt.articulo]?.value ?? undefined) : undefined,
+    }));
+    // Enrich varMap with previous column values for the sample article
+    const prevColValues: Record<string, number> = {};
+    prevCols.forEach(pc => {
+      if (sampleArt) {
+        const v = computedCells[pc.id]?.[sampleArt.articulo]?.value;
+        if (v !== null && v !== undefined) prevColValues[colNameToToken(pc.nombre)] = v;
+      }
+    });
+    const enrichedVarMap = sampleArt ? { ...buildRowVarMap(sampleArt), ...prevColValues } : { ...systemVarMap, ...prevColValues };
+    setEditingColumnFormula({ columnaId: col.id, colNombre: col.nombre, formula: col.formula ?? '', position: { top: rect.bottom + 4, left: rect.left }, columnTokens, enrichedVarMap });
+  }, [zonaColumnas, activeZoneArtsAll, computedCells, colNameToToken, buildRowVarMap, systemVarMap]);
 
   const handleSaveColumnFormula = useCallback(async (formula: string) => {
     if (!editingColumnFormula) return;
@@ -970,21 +1015,18 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
             </div>
           )}
 
-          {editingColumnFormula && (() => {
-            const sampleArt = activeZoneArtsAll[0];
-            const varMap = sampleArt ? buildRowVarMap(sampleArt) : {};
-            return (
-              <ZonaCeldaFormulaEditor
-                formula={editingColumnFormula.formula}
-                varMap={varMap}
-                onSave={handleSaveColumnFormula}
-                onCancel={() => setEditingColumnFormula(null)}
-                position={editingColumnFormula.position}
-                systemVarDefs={systemVarDefs}
-                systemVarMap={systemVarMap}
-              />
-            );
-          })()}
+          {editingColumnFormula && (
+            <ZonaCeldaFormulaEditor
+              formula={editingColumnFormula.formula}
+              varMap={editingColumnFormula.enrichedVarMap}
+              onSave={handleSaveColumnFormula}
+              onCancel={() => setEditingColumnFormula(null)}
+              position={editingColumnFormula.position}
+              systemVarDefs={systemVarDefs}
+              systemVarMap={systemVarMap}
+              columnTokens={editingColumnFormula.columnTokens}
+            />
+          )}
         </div>
       )}
     </div>

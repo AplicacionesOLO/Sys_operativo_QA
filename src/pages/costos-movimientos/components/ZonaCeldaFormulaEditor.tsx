@@ -11,6 +11,8 @@ interface InboundZonaCeldaFormulaEditorProps {
   position: { top: number; left: number };
   systemVarMap?: Record<string, number>;
   systemVarDefs?: VariableDef[];
+  /** Other dynamic columns already computed for this row — usable as variables */
+  columnTokens?: { token: string; label: string; value?: number }[];
 }
 
 const ARTICULO_TOKENS: { token: string; label: string; desc: string }[] = [
@@ -26,7 +28,7 @@ const ARTICULO_TOKENS: { token: string; label: string; desc: string }[] = [
   { token: '{PCT_PROM_UNID_MES}', label: '% Prom. Unid/Mes', desc: '% del Prom. Unid/Mes del artículo sobre la suma total de promedios de la zona' },
 ];
 
-export default function InboundZonaCeldaFormulaEditor({ formula, varMap, onSave, onCancel, position, systemVarDefs, systemVarMap }: InboundZonaCeldaFormulaEditorProps) {
+export default function InboundZonaCeldaFormulaEditor({ formula, varMap, onSave, onCancel, position, systemVarDefs, systemVarMap, columnTokens }: InboundZonaCeldaFormulaEditorProps) {
   const [expr, setExpr] = useState(formula);
   const [search, setSearch] = useState('');
   const [adjustedPos, setAdjustedPos] = useState<{ top: number; left: number }>(position);
@@ -225,6 +227,33 @@ export default function InboundZonaCeldaFormulaEditor({ formula, varMap, onSave,
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+        {/* Dynamic columns of this table — usable as variables in subsequent columns */}
+        {columnTokens && columnTokens.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold text-indigo-500 uppercase tracking-wider mb-1.5">Columnas de esta tabla (fila actual)</p>
+            <div className="flex flex-wrap gap-1.5">
+              {columnTokens
+                .filter(t => !search || t.token.toLowerCase().includes(search.toLowerCase()) || t.label.toLowerCase().includes(search.toLowerCase()))
+                .map(t => (
+                  <button
+                    key={t.token}
+                    onClick={() => insertToken(`{${t.token}}`)}
+                    className="px-2 py-1 text-xs rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-100 cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1"
+                    title={`Valor de la columna "${t.label}" para este artículo`}
+                  >
+                    <span className="font-mono font-medium">{`{${t.token}}`}</span>
+                    {t.value !== undefined && t.value !== null && (
+                      <span className="text-indigo-600 text-[10px] font-semibold tabular-nums">
+                        = {new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(t.value)}
+                      </span>
+                    )}
+                    <span className="text-indigo-400">· {t.label}</span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+
         {filteredArticuloTokens.length > 0 && (
           <div>
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Variables del artículo</p>
