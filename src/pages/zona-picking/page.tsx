@@ -15,6 +15,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useZonaClusters } from '@/hooks/useZonaClusters';
 import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
 import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
+import { logChange } from '@/lib/auditLog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ZonaResumen { zona: string; total_ubicaciones: number; articulos_distintos: number; companias_distintas: number; pct_picking_promedio: number; suma_cant_max: number; }
@@ -553,7 +554,13 @@ const DISTRIB_TOKENS = [
   { token: '{SUMA_CANT_MAX_UBIC}',    label: 'Σ Cant. Máx. ubicación',  desc: 'Suma de Cant. Máx. de todos los artículos de la ubicación' },
   { token: '{SUMA_CANT_MIN_UBIC}',    label: 'Σ Cant. Mín. ubicación',  desc: 'Suma de Cant. Mín. de todos los artículos de la ubicación' },
   { token: '{PCT_PICKING_PROM_UBIC}', label: '% Picking prom. ubic.',   desc: 'Promedio % Picking de todos los artículos de la ubicación' },
-  { token: '{ZONA_TOTAL_ARTS}',       label: 'Total arts. zona',         desc: 'Total de artículos en toda la zona' },
+  { token: '{ZONA_TOTAL_ARTS}',       label: 'Total arts. zona',         desc: 'Total de artículos en la zona activa' },
+  // Slot stats desde Costos de Slots — cruzados por código de Ubicación
+  { token: '{SLOT_TOTAL}',            label: 'Slots totales',            desc: 'Total de slots físicos en esta Ubicación (Costos de Slots)' },
+  { token: '{SLOT_LIBRES}',           label: 'Slots libres',             desc: 'Slots con estado Libre en esta Ubicación' },
+  { token: '{SLOT_BLOQUEADOS}',       label: 'Slots bloqueados',         desc: 'Slots con estado Bloqueado' },
+  { token: '{SLOT_RESERVADOS}',       label: 'Slots reservados',         desc: 'Slots con estado Reservado' },
+  { token: '{SLOT_PCT_LIBRES}',       label: '% Slots libres',           desc: '% de slots libres en esta Ubicación' },
 ];
 
 function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { formulaCtx: FormulaContext; extraVars: Record<string,number>; activeZonas: string[] }) {
@@ -561,16 +568,18 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
-  const [sortKey, setSortKey] = useState<'id_articulo'|'ubicacion'|'pct_picking'|'cant_max'|'zona_picking'>('zona_picking');
+  const [sortKey, setSortKey] = useState<string>('zona_picking');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('asc');
   const [page, setPage] = useState(0);
   const filterZona = '';  // Zone filter is now handled by parent via activeZonas
   const PAGE = 200;
+  // Slot stats cross-reference: ubicacion → {total, libres, bloqueados, tipo_ubicacion, dimension}
+  const [slotStats, setSlotStats] = useState<Record<string,{total:number;libres:number;bloqueados:number;reservados:number;pct_libres:number;tipo_ubicacion:string;dimension:string;zona_almacenaje:string}>>({});
   // Formula columns
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
   const [addingCol, setAddingCol] = useState(false);
   const [newColName, setNewColName] = useState('');
-  const [editingFormula, setEditingFormula] = useState<{id:string;formula:string;position:{top:number;left:number}}|null>(null);
+  const [editingFormula, setEditingFormula] = useState<{id:string;formula:string;colIdx:number;position:{top:number;left:number}}|null>(null);
 
   // Reload when activeZonas changes — uses clean zone-filtered RPCs
   useEffect(() => {
@@ -609,6 +618,25 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       for (const k of Object.keys(ubMap)) ubMap[k].pct_picking_promedio = ubMap[k].total_articulos > 0 ? pctAcc[k] / ubMap[k].total_articulos : 0;
       setUbicMap(ubMap);
       setColumnas((cols ?? []) as DistribCol[]);
+
+      // Load slot stats for cross-reference by Ubicación code
+      const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
+      if (ubicaciones.length > 0) {
+        supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones }).then(({ data: sData }) => {
+          const sMap: Record<string, any> = {};
+          for (const s of (sData ?? []) as any[]) {
+            sMap[String(s.ubicacion ?? '')] = {
+              total: Number(s.total) || 0, libres: Number(s.libres) || 0,
+              bloqueados: Number(s.bloqueados) || 0, reservados: Number(s.reservados) || 0,
+              pct_libres: Number(s.pct_libres) || 0,
+              tipo_ubicacion: String(s.tipo_ubicacion ?? ''),
+              dimension: String(s.dimension ?? ''),
+              zona_almacenaje: String(s.zona_almacenaje ?? ''),
+            };
+          }
+          setSlotStats(sMap);
+        });
+      }
       setLoading(false);
     });
   }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -623,20 +651,29 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const colNameToToken = useCallback((n: string) => n.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), []);
 
   const buildRowVarMapDistrib = useCallback((row: DistribRow) => {
-    const ubic = ubicMap[row.ubicacion] ?? { total_articulos: 0, suma_cant_max: 0, suma_cant_min: 0, pct_picking_promedio: 0 };
+    const ubic  = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cant_max:0, suma_cant_min:0, pct_picking_promedio:0 };
+    const slot  = slotStats[row.ubicacion];
     return {
+      // Article-level
       PCT_PICKING: row.pct_picking,
       CANT_MAX: row.cant_max,
       CANT_MIN: row.cant_min,
+      // Ubicación-level (from grouped table)
       TOTAL_ARTICULOS: ubic.total_articulos,
       SUMA_CANT_MAX_UBIC: ubic.suma_cant_max,
       SUMA_CANT_MIN_UBIC: ubic.suma_cant_min,
       PCT_PICKING_PROM_UBIC: ubic.pct_picking_promedio,
       ZONA_TOTAL_ARTS: totalArtsZona,
+      // Slot stats — cross-referenced from Costos de Slots by Ubicación code
+      SLOT_TOTAL:      slot?.total      ?? 0,
+      SLOT_LIBRES:     slot?.libres     ?? 0,
+      SLOT_BLOQUEADOS: slot?.bloqueados ?? 0,
+      SLOT_RESERVADOS: slot?.reservados ?? 0,
+      SLOT_PCT_LIBRES: slot?.pct_libres ?? 0,
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, totalArtsZona, extraVars, systemVarMap]);
+  }, [ubicMap, slotStats, totalArtsZona, extraVars, systemVarMap]);
 
   // Computed formula values per row (key = id_articulo + ubicacion)
   const computedCols = useMemo(() => {
@@ -674,7 +711,9 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   };
   const saveFormula = async (formula: string) => {
     if (!editingFormula) return;
+    const col = columnas.find(c => c.id === editingFormula.id);
     await supabase.from('zona_picking_distribucion_columnas').update({ formula: formula || null }).eq('id', editingFormula.id);
+    logChange({ modulo: 'zona-picking', accion: 'update_formula_distribucion', entidad_tipo: 'zona_picking_distribucion_columnas', entidad_id: editingFormula.id, entidad_label: col?.nombre, campo: 'formula', valor_antes: col?.formula ?? null, valor_despues: formula || null });
     setColumnas(prev => prev.map(c => c.id === editingFormula.id ? {...c, formula: formula || undefined} : c));
     setEditingFormula(null);
   };
@@ -688,15 +727,25 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     return [...r].sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1;
       if (sortKey === 'pct_picking') return (a.pct_picking - b.pct_picking) * dir;
-      if (sortKey === 'cant_max') return (a.cant_max - b.cant_max) * dir;
-      return (String(a[sortKey]) < String(b[sortKey]) ? -1 : String(a[sortKey]) > String(b[sortKey]) ? 1 : 0) * dir;
+      if (sortKey === 'cant_max')    return (a.cant_max - b.cant_max) * dir;
+      if (sortKey === 'cant_min')    return (a.cant_min - b.cant_min) * dir;
+      // Formula column sort — find column by id and compare computed values
+      const matchedCol = columnas.find(c => c.id === sortKey);
+      if (matchedCol) {
+        const ka = a.ubicacion+'|'+a.id_articulo;
+        const kb = b.ubicacion+'|'+b.id_articulo;
+        const va = computedCols[sortKey]?.[ka]?.value ?? 0;
+        const vb = computedCols[sortKey]?.[kb]?.value ?? 0;
+        return (va - vb) * dir;
+      }
+      return (String((a as any)[sortKey] ?? '') < String((b as any)[sortKey] ?? '') ? -1 : String((a as any)[sortKey] ?? '') > String((b as any)[sortKey] ?? '') ? 1 : 0) * dir;
     });
-  }, [rows, filterZona, search, sortKey, sortDir]);
+  }, [rows, search, sortKey, sortDir, columnas, computedCols]);
 
   const totalPages = Math.ceil(filtered.length / PAGE);
   const paged = filtered.slice(page * PAGE, (page + 1) * PAGE);
-  const toggleSort = (k: typeof sortKey) => { if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(k); setSortDir('asc'); } setPage(0); };
-  const si = (k: typeof sortKey) => sortKey !== k ? 'ri-expand-up-down-line text-slate-300' : sortDir === 'asc' ? 'ri-sort-asc text-slate-700' : 'ri-sort-desc text-slate-700';
+  const toggleSort = (k: string) => { if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(k); setSortDir(columnas.some(c => c.id === k) ? 'desc' : 'asc'); } setPage(0); };
+  const si = (k: string) => sortKey !== k ? 'ri-expand-up-down-line text-slate-300' : sortDir === 'asc' ? 'ri-sort-asc text-slate-700' : 'ri-sort-desc text-slate-700';
 
   return (
     <div className="space-y-3">
@@ -737,7 +786,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                   <span className="text-xs font-medium text-indigo-700">{col.nombre}</span>
                   {sVal != null && <span className="text-sm font-bold text-slate-800 tabular-nums">{new Intl.NumberFormat('es-CO',{minimumFractionDigits:2,maximumFractionDigits:2}).format(sVal)}</span>}
                   <span className="text-[10px] text-slate-400 italic max-w-[160px] overflow-hidden text-ellipsis whitespace-nowrap" title={col.formula}>{col.formula?col.formula.slice(0,35)+(col.formula.length>35?'...':''):'sin fórmula'}</span>
-                  <button onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();setEditingFormula({id:col.id,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className="w-6 h-6 flex items-center justify-center rounded text-indigo-400 hover:text-indigo-600 hover:bg-indigo-100 cursor-pointer" title="Editar fórmula"><i className="ri-functions text-xs"/></button>
+                  <button onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const colIdx=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className="w-6 h-6 flex items-center justify-center rounded text-indigo-400 hover:text-indigo-600 hover:bg-indigo-100 cursor-pointer" title="Editar fórmula"><i className="ri-functions text-xs"/></button>
                   <button onClick={()=>deleteCol(col.id)} className="w-6 h-6 flex items-center justify-center rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50 cursor-pointer"><i className="ri-delete-bin-line text-xs"/></button>
                 </div>
               );
@@ -771,7 +820,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Cant. Mín.</th>
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artíc./Ubic.</th>
                 <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Compañía</th>
-                {columnas.map(col => <th key={col.id} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap ${col.formula?'bg-indigo-50 text-indigo-600':'text-slate-400'}`}>{col.nombre}{col.formula&&<span className="ml-1 text-[9px] bg-indigo-200 text-indigo-700 px-1 rounded font-mono">fx</span>}</th>)}
+                {columnas.map(col => <th key={col.id} onClick={()=>toggleSort(col.id)} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 ${col.formula?'bg-indigo-50 text-indigo-600':'text-slate-400'}`}>{col.nombre}{col.formula&&<span className="ml-1 text-[9px] bg-indigo-200 text-indigo-700 px-1 rounded font-mono">fx</span>} <i className={`ml-0.5 ${si(col.id)}`}/></th>)}
               </tr>
             </thead>
             <tbody>
@@ -831,19 +880,34 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
         </div>
       )}
 
-      {/* Formula editor popup */}
-      {editingFormula && (
-        <ZonaCeldaFormulaEditor
-          formula={editingFormula.formula}
-          varMap={rows.length > 0 ? buildRowVarMapDistrib(rows.find(r => !filterZona || r.zona_picking === filterZona) ?? rows[0]) : systemVarMap}
-          onSave={saveFormula}
-          onCancel={() => setEditingFormula(null)}
-          position={editingFormula.position}
-          systemVarDefs={systemVarDefs}
-          systemVarMap={systemVarMap}
-          columnTokens={DISTRIB_TOKENS.map(t => ({ token: t.token.replace(/\{|\}/g,''), label: t.label, value: undefined }))}
-        />
-      )}
+      {/* Formula editor popup — includes previous formula columns as variables */}
+      {editingFormula && (() => {
+        const sRow = rows[0];
+        const sKey = sRow ? sRow.ubicacion+'|'+sRow.id_articulo : '';
+        const prevCols = editingFormula.colIdx > 0 ? columnas.slice(0, editingFormula.colIdx) : [];
+        const prevColTokens = prevCols.map(pc => ({
+          token: colNameToToken(pc.nombre),
+          label: pc.nombre + ' (columna anterior)',
+          value: sRow ? (computedCols[pc.id]?.[sKey]?.value ?? undefined) : undefined,
+        }));
+        const allTokens = [
+          ...DISTRIB_TOKENS.map(t => ({ token: t.token.replace(/\{|\}/g,''), label: t.label, value: sRow ? (buildRowVarMapDistrib(sRow) as any)[t.token.replace(/\{|\}/g,'')] : undefined })),
+          ...prevColTokens,
+        ];
+        const enrichedVarMap = sRow ? { ...buildRowVarMapDistrib(sRow), ...Object.fromEntries(prevCols.map(pc => [colNameToToken(pc.nombre), computedCols[pc.id]?.[sKey]?.value ?? 0])) } : systemVarMap;
+        return (
+          <ZonaCeldaFormulaEditor
+            formula={editingFormula.formula}
+            varMap={enrichedVarMap}
+            onSave={saveFormula}
+            onCancel={() => setEditingFormula(null)}
+            position={editingFormula.position}
+            systemVarDefs={systemVarDefs}
+            systemVarMap={systemVarMap}
+            columnTokens={allTokens}
+          />
+        );
+      })()}
     </div>
   );
 }
