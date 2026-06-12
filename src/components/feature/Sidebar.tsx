@@ -13,6 +13,7 @@ const MODULE_PATHS: Record<string, string> = {
   'costos-inbound': '/costos-inbound',
   'costos-movimientos': '/costos-movimientos',
   'conteo-slots': '/conteo-slots',
+  'zona-picking': '/zona-picking',
   almacen: '/almacen',
   cotizaciones: '/cotizaciones',
   'mano-obra': '/mano-obra',
