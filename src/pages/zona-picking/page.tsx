@@ -575,9 +575,14 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const PAGE = 200;
   // Slot stats cross-reference: ubicacion → {total, libres, bloqueados, tipo_ubicacion, dimension}
   const [slotStats, setSlotStats] = useState<Record<string,{total:number;libres:number;bloqueados:number;reservados:number;pct_libres:number;tipo_ubicacion:string;dimension:string;zona_almacenaje:string}>>({});
-  // Computed slot costs from Costos de Slots module: ubicacion → {colId: value}
+  // Computed slot costs from Costos de Slots module: ubicacion → {"name:NombreCol": value}
   const [slotCostos, setSlotCostos] = useState<Record<string, Record<string, number>>>({});
+  // Unique column names to display (grouped so same name across zones shows as one column)
   const [slotCostoCols, setSlotCostoCols] = useState<{id:string;nombre:string;formula:string}[]>([]);
+  // Tipo/dim stats for formula evaluation (stored in state so second useEffect can use it)
+  const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
+  // All raw formula cols (include zona for filtering)
+  const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string}[]>([]);
   // Formula columns
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
   const [addingCol, setAddingCol] = useState(false);
@@ -648,42 +653,69 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
         ]);
 
         // Build tipo/dim stats map: "zona|tipo|dim" → stats
-        const tdMap: Record<string, any> = {};
+        const newTdMap: Record<string, any> = {};
         for (const td of (tdStats ?? []) as any[]) {
           const k = `${td.zona_almacenaje}|${td.tipo_ubicacion}|${td.dimension}`;
-          tdMap[k] = { total:Number(td.total)||0, libres:Number(td.libres)||0, bloqueados:Number(td.bloqueados)||0, reservados:Number(td.reservados)||0, otros:Number(td.otros)||0, zona_total:Number(td.zona_total)||0, pct_zona:Number(td.pct_zona)||0, pct_libres:Number(td.pct_libres)||0 };
+          newTdMap[k] = { total:Number(td.total)||0, libres:Number(td.libres)||0, bloqueados:Number(td.bloqueados)||0, reservados:Number(td.reservados)||0, otros:Number(td.otros)||0, zona_total:Number(td.zona_total)||0, pct_zona:Number(td.pct_zona)||0, pct_libres:Number(td.pct_libres)||0 };
         }
+        setSlotTdMap(newTdMap);
 
-        // Step 3: evaluate each formula column for each Ubicación
-        const validCols = ((slotCols ?? []) as any[]).filter((c:any) => c.formula?.trim());
-        setSlotCostoCols(validCols.map((c:any) => ({ id: String(c.id), nombre: String(c.nombre), formula: String(c.formula) })));
+        // Store raw formula cols (with zona for filtering)
+        const rawCols = ((slotCols ?? []) as any[])
+          .filter((c:any) => c.formula?.trim())
+          .map((c:any) => ({ id:String(c.id), nombre:String(c.nombre), formula:String(c.formula), zona:String(c.zona??'') }));
+        setSlotRawCols(rawCols);
 
-        const cosMap: Record<string, Record<string, number>> = {};
-        for (const ubic of ubicaciones) {
-          const st = sMap[ubic];
-          if (!st) continue;
-          const groupKey = `${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`;
-          const td = tdMap[groupKey];
-          if (!td) continue;
-          // Build var map — same tokens as Costos de Slots ZonaDetailTable
-          const varMap = {
-            TOTAL: td.total, LIBRES: td.libres, BLOQUEADOS: td.bloqueados,
-            RESERVADOS: td.reservados, OTROS: td.otros,
-            ZONA_TOTAL: td.zona_total, PCT_ZONA: td.pct_zona, PCT_LIBRES: td.pct_libres,
-            // Also include system vars from formulaCtx
-          };
-          cosMap[ubic] = {};
-          for (const col of validCols) {
-            const ev = evalFormula(String(col.formula), varMap);
-            cosMap[ubic][String(col.id)] = ev.ok ? ev.value : 0;
-          }
+        // Show unique column names (grouped — same name in different zones = one column)
+        const seen = new Set<string>();
+        const uniqueCols: {id:string;nombre:string;formula:string}[] = [];
+        for (const c of rawCols) {
+          if (!seen.has(c.nombre)) { seen.add(c.nombre); uniqueCols.push({id:`name:${c.nombre}`,nombre:c.nombre,formula:c.formula}); }
         }
-        setSlotCostos(cosMap);
+        setSlotCostoCols(uniqueCols);
+        // Cost computation is in the second useEffect (needs systemVarMap)
       }
       setLoading(false);
     }
     })(); // end async IIFE
   }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Declare system var maps BEFORE the useEffect that depends on them
+  const systemVarDefs_sc = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
+  const systemVarMap_sc  = useMemo(():Record<string,number>=>{if(!systemVarDefs_sc.length)return{};try{return buildVariableMap(systemVarDefs_sc,toAllDataSources(formulaCtx));}catch{return {};}},[ formulaCtx,systemVarDefs_sc]);
+
+  // ── Second useEffect: compute slot costs once systemVarMap is available ──────
+  // Separated so systemVarMap (depends on formulaCtx) is ready when we evaluate
+  useEffect(() => {
+    if (!Object.keys(slotStats).length || !slotRawCols.length || !Object.keys(slotTdMap).length) return;
+    const cosMap: Record<string, Record<string, number>> = {};
+    for (const [ubic, st] of Object.entries(slotStats)) {
+      const groupKey = `${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`;
+      const td = slotTdMap[groupKey];
+      if (!td) continue;
+      // Full var map: slot stats + system variables (has {COSTOS_TOTAL_*}, {INVERSIONES_*}, etc.)
+      const varMap = {
+        TOTAL: td.total, LIBRES: td.libres, BLOQUEADOS: td.bloqueados,
+        RESERVADOS: td.reservados, OTROS: td.otros,
+        ZONA_TOTAL: td.zona_total, PCT_ZONA: td.pct_zona, PCT_LIBRES: td.pct_libres,
+        ...systemVarMap_sc,  // ← includes {COSTOS_TOTAL_*} and all system variables
+      };
+      cosMap[ubic] = {};
+      // Group by nombre — find the matching formula col for this Ubicación's zone
+      const seen = new Set<string>();
+      for (const col of slotRawCols) {
+        if (seen.has(col.nombre)) continue;
+        // Match: use the col whose zona = this ubicación's zona_almacenaje
+        // (or any col with that nombre if zone-exact doesn't exist)
+        const zoneMatch = slotRawCols.find(c => c.nombre === col.nombre && c.zona === st.zona_almacenaje);
+        const bestCol = zoneMatch ?? col;
+        const ev = evalFormula(bestCol.formula, varMap);
+        cosMap[ubic][`name:${col.nombre}`] = ev.ok ? ev.value : 0;
+        seen.add(col.nombre);
+      }
+    }
+    setSlotCostos(cosMap);
+  }, [slotStats, slotRawCols, slotTdMap, systemVarMap_sc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const zonas = useMemo(() => [...new Set(rows.map(r => r.zona_picking).filter(Boolean))].sort(), [rows]);
 
