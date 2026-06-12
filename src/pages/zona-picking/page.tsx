@@ -586,8 +586,8 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const [slotCostoCols, setSlotCostoCols] = useState<{id:string;nombre:string;formula:string}[]>([]);
   // Tipo/dim stats for formula evaluation (stored in state so second useEffect can use it)
   const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
-  // All raw formula cols (include zona for filtering)
-  const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string}[]>([]);
+  // All raw formula cols — include zona AND tipo for accurate matching
+  const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string;tipo:string}[]>([]);
   // Formula columns
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
   const [addingCol, setAddingCol] = useState(false);
@@ -650,11 +650,12 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
         }
         setSlotStats(sMap);
 
-        // Step 2: get tipo/dim group aggregations for accurate formula variables
+        // Step 2: get tipo/dim group aggregations + formula cols from costos_slots_tipo_columnas
         const zonasAlmacenaje = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
         const [{ data: tdStats }, { data: slotCols }] = await Promise.all([
           supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlmacenaje }),
-          supabase.from('costos_slots_zona_columnas').select('id, nombre, formula, zona').not('formula', 'is', null),
+          // ← costos_slots_TIPO_columnas is where user configures formulas per tipo (PICKIN, ALMREP, etc.)
+          supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
 
         // Build tipo/dim stats map: "zona|tipo|dim" → stats
@@ -665,13 +666,13 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
         }
         setSlotTdMap(newTdMap);
 
-        // Store raw formula cols (with zona for filtering)
+        // Store raw formula cols — NOW includes tipo for matching
         const rawCols = ((slotCols ?? []) as any[])
           .filter((c:any) => c.formula?.trim())
-          .map((c:any) => ({ id:String(c.id), nombre:String(c.nombre), formula:String(c.formula), zona:String(c.zona??'') }));
+          .map((c:any) => ({ id:String(c.id), nombre:String(c.nombre), formula:String(c.formula), zona:String(c.zona??''), tipo:String(c.tipo??'') }));
         setSlotRawCols(rawCols);
 
-        // Show unique column names (grouped — same name in different zones = one column)
+        // Show unique column names (grouped — same name across zonas/tipos = one column in table)
         const seen = new Set<string>();
         const uniqueCols: {id:string;nombre:string;formula:string}[] = [];
         for (const c of rawCols) {
@@ -706,14 +707,21 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
         ...systemVarMap_sc,  // ← includes {COSTOS_TOTAL_*} and all system variables
       };
       cosMap[ubic] = {};
-      // Group by nombre — find the matching formula col for this Ubicación's zone
+      // Match: col.tipo must match ubicacion.tipo_ubicacion
+      //        col.zona must match ubicacion.zona_almacenaje OR be a cluster containing it
+      const zonaMatchFn = (colZona: string, ubicZona: string) =>
+        colZona === ubicZona || (colZona.startsWith('_cluster_') && colZona.includes(ubicZona));
+
       const seen = new Set<string>();
       for (const col of slotRawCols) {
         if (seen.has(col.nombre)) continue;
-        // Match: use the col whose zona = this ubicación's zona_almacenaje
-        // (or any col with that nombre if zone-exact doesn't exist)
-        const zoneMatch = slotRawCols.find(c => c.nombre === col.nombre && c.zona === st.zona_almacenaje);
-        const bestCol = zoneMatch ?? col;
+        // Find best match: same nombre + matching tipo + matching zona
+        const bestCol = slotRawCols.find(c =>
+          c.nombre === col.nombre &&
+          c.tipo === st.tipo_ubicacion &&
+          zonaMatchFn(c.zona, st.zona_almacenaje)
+        );
+        if (!bestCol) continue; // no formula for this tipo in this zone — skip
         const ev = evalFormula(bestCol.formula, varMap);
         cosMap[ubic][`name:${col.nombre}`] = ev.ok ? ev.value : 0;
         seen.add(col.nombre);
