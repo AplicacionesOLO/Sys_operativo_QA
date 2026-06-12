@@ -552,6 +552,388 @@ function ZonaDetailTable({
           columnTokens={editingColumnFormula.columnTokens}
         />
       )}
+
+      {/* ── DETALLE POR TIPO ── */}
+      <SlotsTipoDetalle
+        zonas={zonas}
+        colZoneKey={colZoneKey}
+        zoneTotalSlots={zoneTotalSlots}
+        systemVarDefs={systemVarDefs}
+        systemVarMap={systemVarMap}
+      />
+    </div>
+  );
+}
+
+// ── Tokens for tipo-level formulas ────────────────────────────────────────────
+const TIPO_TOKENS = [
+  { token: '{TOTAL_TIPO}',     label: 'Total slots del tipo', desc: 'Total de slots de este Tipo en la zona' },
+  { token: '{LIBRES_TIPO}',    label: 'Libres del tipo',      desc: 'Slots libres de este Tipo' },
+  { token: '{BLOQUEADOS_TIPO}',label: 'Bloqueados del tipo',  desc: 'Slots bloqueados de este Tipo' },
+  { token: '{ZONA_TOTAL}',     label: 'Total Zona',           desc: 'Total de slots en toda la zona' },
+  { token: '{PCT_TIPO_ZONA}',  label: '% tipo / zona',        desc: 'Porcentaje que este Tipo representa de la zona' },
+  { token: '{PCT_LIBRES_TIPO}',label: '% Libres del tipo',    desc: 'Porcentaje libre dentro del tipo' },
+];
+
+const ESTADO_COLOR: Record<string, string> = {
+  libre: 'bg-emerald-100 text-emerald-700',
+  free: 'bg-emerald-100 text-emerald-700',
+  disponible: 'bg-emerald-100 text-emerald-700',
+  bloqueado: 'bg-rose-100 text-rose-700',
+  blocked: 'bg-rose-100 text-rose-700',
+  reservado: 'bg-amber-100 text-amber-700',
+  reserved: 'bg-amber-100 text-amber-700',
+};
+
+function estadoColor(e: string): string {
+  return ESTADO_COLOR[e.toLowerCase()] ?? 'bg-slate-100 text-slate-600';
+}
+
+interface SlotRow {
+  id_almacenamiento: string;
+  ubicacion: string;
+  coordenada: string;
+  categoria: string;
+  tipo_ubicacion: string;
+  dimension: string;
+  estado: string;
+  situacion: string;
+  eje_x: string; eje_y: string; eje_z: string;
+}
+
+interface TipoCol { id: string; zona: string; tipo: string; nombre: string; formula?: string; orden: number; }
+
+function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, systemVarMap }: {
+  zonas: string[];
+  colZoneKey: string;
+  zoneTotalSlots: number;
+  systemVarDefs: VariableDef[];
+  systemVarMap: Record<string, number>;
+}) {
+  const [tipos, setTipos] = useState<{ tipo: string; total: number; libres: number }[]>([]);
+  const [selectedTipo, setSelectedTipo] = useState<string | null>(null);
+  const [tipoStats, setTipoStats] = useState<{ total: number; libres: number; bloqueados: number; categorias: string } | null>(null);
+  const [slots, setSlots] = useState<SlotRow[]>([]);
+  const [slotLoading, setSlotLoading] = useState(false);
+  const [slotPage, setSlotPage] = useState(0);
+  const [slotTotal, setSlotTotal] = useState(0);
+  const [search, setSearch] = useState('');
+  const SLOT_PAGE = 100;
+
+  // Tipo formula columns
+  const [tipoColumnas, setTipoColumnas] = useState<TipoCol[]>([]);
+  const [addingTipoCol, setAddingTipoCol] = useState(false);
+  const [newTipoColName, setNewTipoColName] = useState('');
+  const [editingTipoFormula, setEditingTipoFormula] = useState<{ colId: string; formula: string; position: { top: number; left: number } } | null>(null);
+
+  // Load tipos
+  useEffect(() => {
+    if (!zonas.length) return;
+    const loadTipos = async () => {
+      if (zonas.length === 1) {
+        const { data } = await supabase.rpc('fn_slots_zona_tipos', { p_zona: zonas[0] });
+        setTipos(((data ?? []) as any[]).map((r: any) => ({ tipo: String(r.tipo ?? ''), total: Number(r.total) || 0, libres: Number(r.libres) || 0 })));
+      } else {
+        // Multi-zone: aggregate tipos
+        const promises = zonas.map(z => supabase.rpc('fn_slots_zona_tipos', { p_zona: z }));
+        const results = await Promise.all(promises);
+        const map: Record<string, { total: number; libres: number }> = {};
+        for (const { data } of results) {
+          for (const r of (data ?? []) as any[]) {
+            const t = String(r.tipo ?? '');
+            if (!map[t]) map[t] = { total: 0, libres: 0 };
+            map[t].total += Number(r.total) || 0;
+            map[t].libres += Number(r.libres) || 0;
+          }
+        }
+        setTipos(Object.entries(map).map(([tipo, v]) => ({ tipo, ...v })).sort((a, b) => b.total - a.total));
+      }
+    };
+    loadTipos();
+  }, [zonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load slots when tipo changes
+  useEffect(() => {
+    if (!selectedTipo || !zonas.length) return;
+    setSlotLoading(true);
+    setSlotPage(0);
+    const rpcName = zonas.length > 1 ? 'fn_slots_detalle_por_zonas_tipo' : 'fn_slots_detalle_por_tipo';
+    const params = zonas.length > 1
+      ? { p_zonas: zonas, p_tipo: selectedTipo, p_offset: 0, p_limit: SLOT_PAGE }
+      : { p_zona: zonas[0], p_tipo: selectedTipo, p_offset: 0, p_limit: SLOT_PAGE };
+
+    Promise.all([
+      supabase.rpc(rpcName, params),
+      supabase.rpc('fn_slots_tipo_stats', { p_zonas: zonas, p_tipo: selectedTipo }),
+    ]).then(([{ data: sData }, { data: stData }]) => {
+      setSlots(((sData ?? []) as any[]).map((r: any) => ({
+        id_almacenamiento: String(r.id_almacenamiento ?? ''),
+        ubicacion: String(r.ubicacion ?? ''),
+        coordenada: String(r.coordenada ?? ''),
+        categoria: String(r.categoria ?? ''),
+        tipo_ubicacion: String(r.tipo_ubicacion ?? ''),
+        dimension: String(r.dimension ?? ''),
+        estado: String(r.estado ?? ''),
+        situacion: String(r.situacion ?? ''),
+        eje_x: String(r.eje_x ?? ''), eje_y: String(r.eje_y ?? ''), eje_z: String(r.eje_z ?? ''),
+      })));
+      const st = (stData as any[])?.[0] ?? {};
+      setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
+      setSlotTotal(Number((stData as any[])?.[0]?.total) || 0);
+      setSlotLoading(false);
+    });
+  }, [selectedTipo, zonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load tipo formula columns
+  useEffect(() => {
+    if (!selectedTipo || !colZoneKey) return;
+    supabase.from('costos_slots_tipo_columnas').select('*').eq('zona', colZoneKey).eq('tipo', selectedTipo).order('orden').then(({ data }) => {
+      setTipoColumnas((data ?? []) as TipoCol[]);
+    });
+  }, [selectedTipo, colZoneKey]);
+
+  // Tipo-level var map (same for all slots of this tipo)
+  const buildTipoVarMap = useCallback((tipoInfo: { total: number; libres: number; bloqueados: number }) => ({
+    TOTAL_TIPO: tipoInfo.total,
+    LIBRES_TIPO: tipoInfo.libres,
+    BLOQUEADOS_TIPO: tipoInfo.bloqueados,
+    ZONA_TOTAL: zoneTotalSlots,
+    PCT_TIPO_ZONA: zoneTotalSlots > 0 ? (tipoInfo.total / zoneTotalSlots) * 100 : 0,
+    PCT_LIBRES_TIPO: tipoInfo.total > 0 ? (tipoInfo.libres / tipoInfo.total) * 100 : 0,
+    ...systemVarMap,
+  }), [zoneTotalSlots, systemVarMap]);
+
+  // Compute formula column values (global — same for all slots)
+  const computedTipoCols = useMemo(() => {
+    if (!tipoStats) return {};
+    const varMap = buildTipoVarMap(tipoStats);
+    const result: Record<string, { value: number | null; error: boolean }> = {};
+    for (const col of tipoColumnas) {
+      if (!col.formula?.trim()) { result[col.id] = { value: null, error: false }; continue; }
+      const r = evalFormula(col.formula, varMap);
+      result[col.id] = { value: r.ok ? r.value : null, error: !r.ok };
+    }
+    return result;
+  }, [tipoColumnas, tipoStats, buildTipoVarMap]);
+
+  const filteredSlots = useMemo(() => {
+    if (!search) return slots;
+    const q = search.toLowerCase();
+    return slots.filter(s => s.ubicacion.toLowerCase().includes(q) || s.coordenada.toLowerCase().includes(q) || s.categoria.toLowerCase().includes(q) || s.estado.toLowerCase().includes(q));
+  }, [slots, search]);
+
+  const addTipoCol = async () => {
+    if (!newTipoColName.trim() || !selectedTipo) return;
+    const { data } = await supabase.from('costos_slots_tipo_columnas').insert({ zona: colZoneKey, tipo: selectedTipo, nombre: newTipoColName.trim(), orden: tipoColumnas.length }).select().maybeSingle();
+    if (data) setTipoColumnas(prev => [...prev, data as TipoCol]);
+    setNewTipoColName(''); setAddingTipoCol(false);
+  };
+
+  const deleteTipoCol = async (id: string) => {
+    if (!confirm('¿Eliminar esta columna?')) return;
+    await supabase.from('costos_slots_tipo_columnas').delete().eq('id', id);
+    setTipoColumnas(prev => prev.filter(c => c.id !== id));
+  };
+
+  const saveTipoFormula = async (formula: string) => {
+    if (!editingTipoFormula) return;
+    await supabase.from('costos_slots_tipo_columnas').update({ formula: formula || null }).eq('id', editingTipoFormula.colId);
+    setTipoColumnas(prev => prev.map(c => c.id === editingTipoFormula.colId ? { ...c, formula: formula || undefined } : c));
+    setEditingTipoFormula(null);
+  };
+
+  const TIPO_COLORS = ['bg-cyan-500','bg-indigo-500','bg-teal-500','bg-violet-500','bg-amber-500','bg-rose-500','bg-emerald-500','bg-sky-500'];
+
+  if (!tipos.length) return null;
+
+  return (
+    <div className="space-y-4 border-t border-slate-200 pt-5 mt-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Detalle por Tipo de Ubicación</p>
+          <p className="text-xs text-slate-400 mt-0.5">Slot individual · Coordenada · Categoría · Precio via fórmulas</p>
+        </div>
+      </div>
+
+      {/* Tipo filter tabs */}
+      <div className="flex gap-1.5 flex-wrap">
+        {tipos.map((t, i) => {
+          const isActive = selectedTipo === t.tipo;
+          const dotColor = TIPO_COLORS[i % TIPO_COLORS.length];
+          const pctL = t.total > 0 ? (t.libres / t.total) * 100 : 0;
+          return (
+            <button key={t.tipo} onClick={() => setSelectedTipo(t.tipo)}
+              className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${isActive ? 'bg-slate-800 text-white border-transparent shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400 hover:bg-slate-50'}`}>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-white/70' : dotColor}`} />
+              {t.tipo}
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                {new Intl.NumberFormat('es-CO').format(t.total)}
+              </span>
+              {pctL > 0 && <span className={`text-[10px] ${isActive ? 'text-white/60' : 'text-emerald-600'}`}>{pctL.toFixed(0)}%L</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {selectedTipo && tipoStats && (
+        <div className="space-y-3">
+          {/* Tipo stats */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5">
+              <p className="text-xs text-cyan-600 font-medium">"{selectedTipo}"</p>
+              <p className="text-base font-bold text-cyan-700">{new Intl.NumberFormat('es-CO').format(tipoStats.total)} slots</p>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2.5">
+              <p className="text-xs text-emerald-600">Libres</p>
+              <p className="text-base font-bold text-emerald-700">{new Intl.NumberFormat('es-CO').format(tipoStats.libres)} <span className="text-xs opacity-70">({tipoStats.total > 0 ? ((tipoStats.libres/tipoStats.total)*100).toFixed(1) : 0}%)</span></p>
+            </div>
+            <div className="bg-rose-50 border border-rose-100 rounded-lg px-3 py-2.5">
+              <p className="text-xs text-rose-600">Bloqueados</p>
+              <p className="text-base font-bold text-rose-700">{new Intl.NumberFormat('es-CO').format(tipoStats.bloqueados)}</p>
+            </div>
+            {tipoStats.categorias && (
+              <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2.5">
+                <p className="text-xs text-violet-600">Categorías</p>
+                <p className="text-sm font-medium text-violet-700 truncate" title={tipoStats.categorias}>{tipoStats.categorias}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Formula columns for this tipo */}
+          <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-indigo-700">Columnas de precio para "{selectedTipo}"</p>
+                <p className="text-[10px] text-indigo-500 mt-0.5">Tokens: {TIPO_TOKENS.map(t => t.token).join(' · ')}</p>
+              </div>
+              {!addingTipoCol && <button onClick={() => setAddingTipoCol(true)} className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>}
+            </div>
+            {addingTipoCol && (
+              <div className="flex items-center gap-2">
+                <input type="text" value={newTipoColName} onChange={e => setNewTipoColName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addTipoCol(); if (e.key === 'Escape') { setAddingTipoCol(false); setNewTipoColName(''); } }} placeholder="Nombre de columna (ej: Costo/Slot)..." className="flex-1 px-3 py-1.5 text-xs border border-indigo-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white" autoFocus />
+                <button onClick={addTipoCol} disabled={!newTipoColName.trim()} className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs rounded-lg cursor-pointer disabled:opacity-50">Crear</button>
+                <button onClick={() => { setAddingTipoCol(false); setNewTipoColName(''); }} className="px-3 py-1.5 text-slate-500 hover:bg-slate-100 text-xs rounded-lg cursor-pointer">Cancelar</button>
+              </div>
+            )}
+            {tipoColumnas.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {tipoColumnas.map(col => {
+                  const val = computedTipoCols[col.id];
+                  return (
+                    <div key={col.id} className="flex items-center gap-1.5 bg-white border border-indigo-200 rounded-lg px-3 py-2">
+                      <div>
+                        <span className="text-xs font-medium text-indigo-700">{col.nombre}</span>
+                        {val?.value != null && <span className="ml-2 text-sm font-bold text-slate-800">{new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val.value)}</span>}
+                        {val?.error && <span className="ml-2 text-xs text-rose-500">Error en fórmula</span>}
+                        {!col.formula && <span className="ml-2 text-xs text-slate-400 italic">sin fórmula</span>}
+                        {col.formula && <span className="ml-2 text-[10px] text-indigo-400 font-mono">{col.formula.slice(0, 40)}{col.formula.length > 40 ? '...' : ''}</span>}
+                      </div>
+                      <button onClick={e => { const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); setEditingTipoFormula({ colId: col.id, formula: col.formula ?? '', position: { top: rect.bottom + 4, left: rect.left } }); }} className="w-6 h-6 flex items-center justify-center rounded text-indigo-400 hover:text-indigo-600 hover:bg-indigo-100 cursor-pointer flex-shrink-0" title="Editar fórmula"><i className="ri-functions text-xs"/></button>
+                      <button onClick={() => deleteTipoCol(col.id)} className="w-6 h-6 flex items-center justify-center rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50 cursor-pointer flex-shrink-0"><i className="ri-delete-bin-line text-xs"/></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Individual slot table */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i className="ri-search-line text-sm text-slate-400"/></div>
+                <input type="text" placeholder="Buscar ubicación, coordenada, categoría..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-100 focus:border-cyan-300 outline-none bg-white placeholder:text-slate-400"/>
+              </div>
+              <span className="text-xs text-slate-400 whitespace-nowrap">{filteredSlots.length} slots</span>
+            </div>
+
+            {slotLoading ? (
+              <div className="flex items-center justify-center py-8"><div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin"/></div>
+            ) : (
+              <div className="border border-slate-200 rounded-lg overflow-auto max-h-[55vh]">
+                <table className="text-xs whitespace-nowrap w-full">
+                  <thead>
+                    <tr className="bg-slate-50 sticky top-0 z-10">
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Código</th>
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Coordenada</th>
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Categoría</th>
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Tipo</th>
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Dimensión</th>
+                      <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Estado</th>
+                      {tipoColumnas.map(col => (
+                        <th key={col.id} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 ${col.formula ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500'}`}>
+                          {col.nombre}{col.formula && <span className="ml-1 text-[10px] bg-indigo-200 text-indigo-700 px-1 rounded font-mono">fx</span>}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSlots.slice(slotPage * SLOT_PAGE, (slotPage + 1) * SLOT_PAGE).map((slot, i) => (
+                      <tr key={`${slot.ubicacion}-${i}`} className={`border-t border-slate-100 hover:bg-cyan-50/40 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
+                        <td className="px-3 py-1.5 font-medium text-slate-700 border-r border-slate-100">{slot.ubicacion || slot.id_almacenamiento || '—'}</td>
+                        <td className="px-3 py-1.5 font-mono text-slate-600 border-r border-slate-100 text-[11px]">{slot.coordenada !== '--' ? slot.coordenada : `${slot.eje_x}-${slot.eje_y}-${slot.eje_z}` || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-600 border-r border-slate-100">{slot.categoria || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-600 border-r border-slate-100">{slot.tipo_ubicacion || '—'}</td>
+                        <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{slot.dimension || '—'}</td>
+                        <td className="px-3 py-1.5 border-r border-slate-100">
+                          {slot.estado ? <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${estadoColor(slot.estado)}`}>{slot.estado}</span> : '—'}
+                        </td>
+                        {tipoColumnas.map(col => {
+                          const val = computedTipoCols[col.id];
+                          return (
+                            <td key={col.id} className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/30">
+                              {val?.error ? <span className="text-rose-400 text-[10px]">Error</span>
+                              : val?.value != null ? <span className="text-indigo-700 font-medium tabular-nums">{new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val.value)}</span>
+                              : <span className="text-slate-300">—</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                    {filteredSlots.length === 0 && (
+                      <tr><td colSpan={6 + tipoColumnas.length} className="px-3 py-8 text-center text-slate-400">{search ? 'Sin resultados' : 'Sin slots'}</td></tr>
+                    )}
+                  </tbody>
+                  {filteredSlots.length > 0 && tipoColumnas.some(c => c.formula && computedTipoCols[c.id]?.value != null) && (
+                    <tfoot>
+                      <tr className="border-t-2 border-slate-200 bg-slate-100/80">
+                        <td className="px-3 py-2 font-semibold text-slate-600 text-xs" colSpan={6}>{filteredSlots.length} slots · valor de columnas aplica igual a todos los slots del tipo</td>
+                        {tipoColumnas.map(col => {
+                          const val = computedTipoCols[col.id];
+                          return <td key={col.id} className="px-3 py-2 text-right bg-indigo-50/50">
+                            {val?.value != null ? <span className="text-xs font-bold text-indigo-700">{new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val.value)}</span> : null}
+                          </td>;
+                        })}
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+            {Math.ceil(filteredSlots.length / SLOT_PAGE) > 1 && (
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <span className="text-xs text-slate-400">{slotPage*SLOT_PAGE+1}–{Math.min((slotPage+1)*SLOT_PAGE,filteredSlots.length)} de {filteredSlots.length}</span>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setSlotPage(p => Math.max(0,p-1))} disabled={slotPage===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap"><i className="ri-arrow-left-s-line"/>Anterior</button>
+                  <button onClick={() => setSlotPage(p => Math.min(Math.ceil(filteredSlots.length/SLOT_PAGE)-1,p+1))} disabled={slotPage>=Math.ceil(filteredSlots.length/SLOT_PAGE)-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap">Siguiente<i className="ri-arrow-right-s-line"/></button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {editingTipoFormula && tipoStats && (
+        <ZonaCeldaFormulaEditor
+          formula={editingTipoFormula.formula}
+          varMap={buildTipoVarMap(tipoStats)}
+          onSave={saveTipoFormula}
+          onCancel={() => setEditingTipoFormula(null)}
+          position={editingTipoFormula.position}
+          systemVarDefs={systemVarDefs}
+          systemVarMap={systemVarMap}
+        />
+      )}
     </div>
   );
 }
