@@ -17,7 +17,8 @@ import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaCl
 import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface ZonaResumen { zona: string; total_ubicaciones: number; articulos_distintos: number; companias_distintas: number; pct_picking_promedio: number; }
+interface ZonaResumen { zona: string; total_ubicaciones: number; articulos_distintos: number; companias_distintas: number; pct_picking_promedio: number; suma_cant_max: number; }
+interface VarColumna { id: string; nombre: string; formula?: string; orden: number; }
 interface PickingRow { ubicacion: string; id_articulo: string; id_compania: string; descripcion: string; zona_picking: string; pct_picking: number; cant_max: number; cant_min: number; compania: string; sucursal: string; id_presentacion: string; auto_reponer: string; }
 interface ZonaColumna { id: string; zona: string; nombre: string; tipo: string; orden: number; formula?: string; }
 interface MasivoInfo { totalRegistros: number; headers: string[] }
@@ -97,11 +98,12 @@ function SortableColHeader({col,onDelete,onEditFormula,onRename,onSort,sortIconC
 }
 
 // ── Zone Detail Table ─────────────────────────────────────────────────────────
-function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClustersChange,allZoneNames,zonaTotals}:{
+function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClustersChange,allZoneNames,zonaTotals,extraVars}:{
   zonas:string[];zona_label:string;formulaCtx:FormulaContext;
   clusters:{id:string;nombre:string;zonas:string[];color:string;orden:number}[];
   onClustersChange:()=>void;allZoneNames:string[];
   zonaTotals:ZonaResumen[];
+  extraVars: Record<string, number>;
 }) {
   const [rows,setRows]=useState<PickingRow[]>([]);
   const [loading,setLoading]=useState(false);
@@ -171,8 +173,9 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
     CANT_MIN:row.cant_min,
     ZONA_TOTAL:zonaTotalUbicaciones,
     PCT_ZONA:zonaTotalUbicaciones>0?(1/zonaTotalUbicaciones)*100:0,
+    ...extraVars,   // ← variables de la tabla de resumen/variables
     ...systemVarMap,
-  }),[zonaTotalUbicaciones,systemVarMap]);
+  }),[zonaTotalUbicaciones,systemVarMap,extraVars]);
 
   const columnOrder=useMemo(()=>{
     const derived=['FIXED:ubicacion','FIXED:id_articulo','FIXED:descripcion','FIXED:compania','FIXED:pct_picking','FIXED:cant_max','FIXED:cant_min','FIXED:auto_reponer',...zonaColumnas.map(c=>c.id)];
@@ -448,6 +451,116 @@ function ZonaPickingDetailTable({zonas,zona_label,formulaCtx,clusters,onClusters
   );
 }
 
+// ── Tabla de Variables — define constantes globales usables en fórmulas ───────
+function TablaVariables({ varColumnas, varColValues, formulaCtx, onReload }: {
+  varColumnas: VarColumna[];
+  varColValues: Record<string, number>;
+  formulaCtx: FormulaContext;
+  onReload: () => void;
+}) {
+  const [addingCol, setAddingCol] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [editingFormula, setEditingFormula] = useState<{ id: string; formula: string; position: { top: number; left: number } } | null>(null);
+
+  const systemVarDefs = useMemo(() => { try { return buildVariableDefs(toAllDataSources(formulaCtx)); } catch { return []; } }, [formulaCtx]);
+  const systemVarMap = useMemo(() => { if (!systemVarDefs.length) return {}; try { return buildVariableMap(systemVarDefs, toAllDataSources(formulaCtx)); } catch { return {}; } }, [formulaCtx, systemVarDefs]);
+
+  const addCol = async () => {
+    if (!newName.trim()) return;
+    setSaving(true);
+    await supabase.from('zona_picking_variables_columnas').insert({ nombre: newName.trim(), orden: varColumnas.length });
+    setSaving(false); setNewName(''); setAddingCol(false); onReload();
+  };
+
+  const deleteCol = async (id: string) => {
+    if (!confirm('¿Eliminar esta variable?')) return;
+    await supabase.from('zona_picking_variables_columnas').delete().eq('id', id);
+    onReload();
+  };
+
+  const saveFormula = async (formula: string) => {
+    if (!editingFormula) return;
+    await supabase.from('zona_picking_variables_columnas').update({ formula: formula || null }).eq('id', editingFormula.id);
+    setEditingFormula(null); onReload();
+  };
+
+  return (
+    <div className="bg-white border border-violet-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-violet-100 bg-violet-50 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-violet-800">Tabla de Variables</p>
+          <p className="text-xs text-violet-500 mt-0.5">Define valores globales con fórmulas del sistema. Usa el token en fórmulas de ubicación: <code className="bg-violet-100 px-1 rounded">{'{NOMBRE_VARIABLE}'}</code></p>
+        </div>
+        {!addingCol && <button onClick={() => setAddingCol(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500 hover:bg-violet-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar variable</button>}
+      </div>
+
+      {addingCol && (
+        <div className="px-5 py-3 border-b border-violet-100 bg-violet-50/50 flex items-center gap-3">
+          <input type="text" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addCol(); if (e.key === 'Escape') { setAddingCol(false); setNewName(''); } }} placeholder="Nombre de la variable (ej: Costo Picking Total)" className="flex-1 px-3 py-1.5 text-sm border border-violet-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-violet-400 bg-white" autoFocus />
+          <button onClick={addCol} disabled={!newName.trim() || saving} className="px-3 py-1.5 bg-violet-500 hover:bg-violet-600 disabled:opacity-40 text-white text-xs rounded-lg cursor-pointer">Crear</button>
+          <button onClick={() => { setAddingCol(false); setNewName(''); }} className="px-3 py-1.5 text-slate-500 hover:bg-slate-100 text-xs rounded-lg cursor-pointer">Cancelar</button>
+        </div>
+      )}
+
+      {varColumnas.length === 0 && !addingCol ? (
+        <div className="px-5 py-8 text-center text-slate-400 text-sm">
+          <i className="ri-variable-line text-2xl block mb-2 text-slate-300"/>
+          Sin variables. Crea una variable con una fórmula y úsala como <code className="bg-slate-100 px-1 rounded text-xs">{'{TOKEN}'}</code> en las fórmulas por ubicación.
+        </div>
+      ) : (
+        <table className="text-xs w-full">
+          <thead><tr className="bg-slate-50 border-b border-slate-200">
+            <th className="px-4 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Nombre</th>
+            <th className="px-4 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Token</th>
+            <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Valor Calculado</th>
+            <th className="px-4 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Fórmula</th>
+            <th className="px-4 py-2.5 text-center text-slate-500 font-semibold w-20">Acciones</th>
+          </tr></thead>
+          <tbody>
+            {varColumnas.map((col, i) => {
+              const token = col.nombre.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+              const val = varColValues[token];
+              return (
+                <tr key={col.id} className={`border-b border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
+                  <td className="px-4 py-2.5 font-medium text-slate-700 border-r border-slate-100">{col.nombre}</td>
+                  <td className="px-4 py-2.5 border-r border-slate-100"><code className="bg-violet-100 text-violet-700 px-2 py-0.5 rounded font-mono text-[11px]">{`{${token}}`}</code></td>
+                  <td className="px-4 py-2.5 text-right border-r border-slate-100">
+                    {!col.formula ? <span className="text-slate-300 italic text-[11px]">sin fórmula</span>
+                    : val != null ? <span className="text-lg font-bold text-violet-700">{new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val)}</span>
+                    : <span className="text-rose-400 text-[11px]">Error en fórmula</span>}
+                  </td>
+                  <td className="px-4 py-2.5 border-r border-slate-100">
+                    {col.formula ? <span className="font-mono text-[10px] text-slate-500 max-w-[200px] overflow-hidden text-ellipsis block">{col.formula}</span> : <span className="text-slate-300 italic text-[11px]">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                      <button onClick={e => { const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); setEditingFormula({ id: col.id, formula: col.formula ?? '', position: { top: rect.bottom + 4, left: Math.max(8, rect.left - 300) } }); }} className={`w-7 h-7 flex items-center justify-center rounded cursor-pointer ${col.formula ? 'text-violet-600 hover:bg-violet-100' : 'text-slate-400 hover:text-violet-500 hover:bg-violet-50'}`} title="Editar fórmula"><i className="ri-functions text-xs"/></button>
+                      <button onClick={() => deleteCol(col.id)} className="w-7 h-7 flex items-center justify-center rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50 cursor-pointer"><i className="ri-delete-bin-line text-xs"/></button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editingFormula && (
+        <ZonaCeldaFormulaEditor
+          formula={editingFormula.formula}
+          varMap={systemVarMap}
+          onSave={saveFormula}
+          onCancel={() => setEditingFormula(null)}
+          position={editingFormula.position}
+          systemVarDefs={systemVarDefs}
+          systemVarMap={systemVarMap}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function CostoZonaPickingPage() {
   const [masivoInfo,setMasivoInfo]=useState<MasivoInfo|null>(null);
@@ -458,6 +571,9 @@ export default function CostoZonaPickingPage() {
   const [zonaResumen,setZonaResumen]=useState<ZonaResumen[]>([]);
   const [globalTotals,setGlobalTotals]=useState<{total_ubicaciones:number;total_zonas:number;total_articulos:number;total_companias:number;pct_picking_promedio:number}|null>(null);
   const [formulaCtx,setFormulaCtx]=useState<FormulaContext>(EMPTY_FORMULA_CTX);
+  // Variable columns — global formula constants usable in per-location formulas
+  const [varColumnas,setVarColumnas]=useState<VarColumna[]>([]);
+  const [varColValues,setVarColValues]=useState<Record<string,number>>({});
 
   const [activeSelection,setActiveSelection]=useState<ActiveSelection>({type:'zone',zona:''});
   const isCluster=activeSelection.type==='cluster';
@@ -482,7 +598,7 @@ export default function CostoZonaPickingPage() {
     ]);
     const t0=(totRaw as any[])?.[0]??{};
     setGlobalTotals({total_ubicaciones:Number(t0.total_ubicaciones)||0,total_zonas:Number(t0.total_zonas)||0,total_articulos:Number(t0.total_articulos)||0,total_companias:Number(t0.total_companias)||0,pct_picking_promedio:Number(t0.pct_picking_promedio)||0});
-    const zonas=((zonRaw??[]) as any[]).map((r:any)=>({zona:String(r.zona??''),total_ubicaciones:Number(r.total_ubicaciones)||0,articulos_distintos:Number(r.articulos_distintos)||0,companias_distintas:Number(r.companias_distintas)||0,pct_picking_promedio:Number(r.pct_picking_promedio)||0}));
+    const zonas=((zonRaw??[]) as any[]).map((r:any)=>({zona:String(r.zona??''),total_ubicaciones:Number(r.total_ubicaciones)||0,articulos_distintos:Number(r.articulos_distintos)||0,companias_distintas:Number(r.companias_distintas)||0,pct_picking_promedio:Number(r.pct_picking_promedio)||0,suma_cant_max:Number(r.suma_cant_max)||0}));
     setZonaResumen(zonas);
 
     // Build full formulaCtx (same enrichment as costos/page.tsx)
@@ -499,7 +615,31 @@ export default function CostoZonaPickingPage() {
     setLoading(false);
   },[]);
 
-  useEffect(()=>{loadData();loadClusters();},[loadData,loadClusters]);
+  // Load and compute variable columns
+  const loadVarColumnas = useCallback(async () => {
+    const { data } = await supabase.from('zona_picking_variables_columnas').select('*').order('orden');
+    setVarColumnas((data ?? []) as VarColumna[]);
+  }, []);
+
+  useEffect(()=>{loadData();loadClusters();loadVarColumnas();},[loadData,loadClusters,loadVarColumnas]);
+
+  // Re-compute var column values whenever formulaCtx or varColumnas change
+  useEffect(()=>{
+    if(!varColumnas.length)return;
+    try {
+      const defs = buildVariableDefs(toAllDataSources(formulaCtx));
+      const sysVarMap = buildVariableMap(defs, toAllDataSources(formulaCtx));
+      const vals: Record<string,number> = {};
+      for(const col of varColumnas) {
+        if(col.formula?.trim()) {
+          const token = col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase();
+          const r = evalFormula(col.formula, sysVarMap);
+          vals[token] = r.ok ? r.value : 0;
+        }
+      }
+      setVarColValues(vals);
+    } catch { setVarColValues({}); }
+  },[varColumnas, formulaCtx]);
   useEffect(()=>{
     if(activeSelection.type==='zone'&&!activeSelection.zona&&zonaResumen.length>0){
       const first=zonaResumen.find(z=>!clusters.some(c=>c.zonas.includes(z.zona)));
@@ -562,21 +702,59 @@ export default function CostoZonaPickingPage() {
                     <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3"><p className="text-xs text-slate-500">Compañías</p><p className="text-lg font-bold text-slate-700">{globalTotals.total_companias}</p></div>
                     <div className="bg-fuchsia-50 border border-fuchsia-100 rounded-lg px-4 py-3"><p className="text-xs text-fuchsia-600">% Picking prom.</p><p className="text-lg font-bold text-fuchsia-700">{fmtDec(globalTotals.pct_picking_promedio)}%</p></div>
                   </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-5">
-                    <p className="text-sm font-semibold text-slate-700 mb-3">Zonas Picking</p>
-                    <div className="space-y-2">
-                      {zonaResumen.map((z,i)=>{
-                        const pctT=globalTotals.total_ubicaciones>0?(z.total_ubicaciones/globalTotals.total_ubicaciones)*100:0;
-                        return<div key={z.zona} className="flex items-center gap-3">
-                          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[i%ZONE_COLORS.length]}`}/>
-                          <span className="w-32 text-xs text-slate-600 font-medium truncate flex-shrink-0">{z.zona}</span>
-                          <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{width:`${Math.max(pctT,0.5)}%`}}/></div>
-                          <span className="w-20 text-right text-xs text-slate-700 font-medium flex-shrink-0">{fmt(z.total_ubicaciones)} ubic.</span>
-                          <span className="w-16 text-right text-xs text-fuchsia-600 flex-shrink-0">{fmtDec(z.pct_picking_promedio)}% prom.</span>
-                        </div>;
-                      })}
+
+                  {/* ── Tabla de Conteo por Zona ── */}
+                  <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="px-5 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-700">Conteo de Ubicaciones por Zona</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Los datos numéricos fueron limpiados (ej: "2UD" → 2)</p>
+                      </div>
+                    </div>
+                    <div className="overflow-auto">
+                      <table className="text-xs w-full">
+                        <thead><tr className="bg-slate-50 border-b border-slate-200">
+                          <th className="px-4 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Zona Picking</th>
+                          <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Ubicaciones</th>
+                          <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">% Total</th>
+                          <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artículos</th>
+                          <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">% Picking prom.</th>
+                          <th className="px-4 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Σ Cant. Máx.</th>
+                          {varColumnas.filter(c=>c.formula).map(c=><th key={c.id} className="px-4 py-2.5 text-right text-violet-600 font-semibold border-r border-slate-200 bg-violet-50/50">{c.nombre} <span className="text-[10px] font-mono bg-violet-100 px-1 rounded">fx</span></th>)}
+                        </tr></thead>
+                        <tbody>
+                          {zonaResumen.map((z,i)=>{
+                            const pctT=globalTotals.total_ubicaciones>0?(z.total_ubicaciones/globalTotals.total_ubicaciones)*100:0;
+                            return<tr key={z.zona} className={`border-b border-slate-100 hover:bg-violet-50/30 ${i%2===0?'bg-white':'bg-slate-50/30'}`}>
+                              <td className="px-4 py-2.5 font-medium text-slate-700 border-r border-slate-100 flex items-center gap-2"><span className={`w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[i%ZONE_COLORS.length]}`}/>{z.zona}</td>
+                              <td className="px-4 py-2.5 text-right font-bold text-violet-700 border-r border-slate-100">{fmt(z.total_ubicaciones)}</td>
+                              <td className="px-4 py-2.5 text-right border-r border-slate-100"><div className="flex items-center justify-end gap-2"><div className="w-12 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-violet-400 rounded-full" style={{width:`${Math.max(pctT,0.5)}%`}}/></div><span className="text-slate-500 w-8 text-right">{pctT.toFixed(1)}%</span></div></td>
+                              <td className="px-4 py-2.5 text-right text-slate-600 border-r border-slate-100">{fmt(z.articulos_distintos)}</td>
+                              <td className="px-4 py-2.5 text-right text-fuchsia-600 font-medium border-r border-slate-100">{fmtDec(z.pct_picking_promedio)}%</td>
+                              <td className="px-4 py-2.5 text-right text-slate-600 border-r border-slate-100">{fmtDec(z.suma_cant_max)}</td>
+                              {varColumnas.filter(c=>c.formula).map(c=>{
+                                const token=c.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase();
+                                const val=varColValues[token];
+                                return<td key={c.id} className="px-4 py-2.5 text-right font-bold text-violet-700 border-r border-slate-100 bg-violet-50/30">{val!=null?new Intl.NumberFormat('es-CO',{minimumFractionDigits:2,maximumFractionDigits:2}).format(val):'—'}</td>;
+                              })}
+                            </tr>;
+                          })}
+                          <tr className="border-t-2 border-slate-200 bg-slate-100/80">
+                            <td className="px-4 py-2 font-semibold text-slate-600 text-xs">{zonaResumen.length} zonas</td>
+                            <td className="px-4 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-700">{fmt(globalTotals.total_ubicaciones)}</span></td>
+                            <td className="px-4 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-violet-600">100%</span></td>
+                            <td className="px-4 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(globalTotals.total_articulos)}</span></td>
+                            <td className="px-4 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-fuchsia-600">{fmtDec(globalTotals.pct_picking_promedio)}%</span></td>
+                            <td className="px-4 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmtDec(zonaResumen.reduce((s,z)=>s+z.suma_cant_max,0))}</span></td>
+                            {varColumnas.filter(c=>c.formula).map(c=><td key={c.id} className="px-4 py-2 border-r border-slate-100"/>)}
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </div>
+
+                  {/* ── Tabla de Variables — fórmulas globales usables en por-ubicación ── */}
+                  <TablaVariables varColumnas={varColumnas} varColValues={varColValues} formulaCtx={formulaCtx} onReload={loadVarColumnas}/>
                 </div>
               )}
 
@@ -614,6 +792,7 @@ export default function CostoZonaPickingPage() {
                       onClustersChange={loadClusters}
                       allZoneNames={allZoneNames}
                       zonaTotals={zonaResumen}
+                      extraVars={varColValues}
                     />
                   )}
                 </div>
