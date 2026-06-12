@@ -33,7 +33,7 @@ interface PickingRow {
 interface ArticuloRow { id_articulo: string; descripcion: string; id_compania: string; compania: string; pct_picking: number; cant_max: number; cant_min: number; id_presentacion: string; auto_reponer: string; }
 interface ZonaColumna { id: string; zona: string; nombre: string; tipo: string; orden: number; formula?: string; }
 interface MasivoInfo { totalRegistros: number; headers: string[] }
-type Tab = 'resumen' | 'zonas' | 'distribucion' | 'datos';
+type Tab = 'resumen' | 'zonas' | 'datos';
 type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
 
 const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
@@ -556,7 +556,7 @@ const DISTRIB_TOKENS = [
   { token: '{ZONA_TOTAL_ARTS}',       label: 'Total arts. zona',         desc: 'Total de artículos en toda la zona' },
 ];
 
-function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: FormulaContext; extraVars: Record<string,number> }) {
+function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { formulaCtx: FormulaContext; extraVars: Record<string,number>; activeZonas: string[] }) {
   const [rows, setRows] = useState<DistribRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
   const [loading, setLoading] = useState(false);
@@ -564,7 +564,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
   const [sortKey, setSortKey] = useState<'id_articulo'|'ubicacion'|'pct_picking'|'cant_max'|'zona_picking'>('zona_picking');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('asc');
   const [page, setPage] = useState(0);
-  const [filterZona, setFilterZona] = useState('');
+  const filterZona = '';  // Zone filter is now handled by parent via activeZonas
   const PAGE = 200;
   // Formula columns
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
@@ -572,38 +572,46 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
   const [newColName, setNewColName] = useState('');
   const [editingFormula, setEditingFormula] = useState<{id:string;formula:string;position:{top:number;left:number}}|null>(null);
 
+  // Reload when activeZonas changes — uses clean zone-filtered RPCs
   useEffect(() => {
+    if (!activeZonas.length) { setRows([]); setUbicMap({}); return; }
     setLoading(true);
-    const toN = (v: unknown) => { const s = String(v ?? '').trim(); if (!s) return 0; const c = s.replace(/[^0-9.-]/g,''); return c ? parseFloat(c) : 0; };
+    const rpc = activeZonas.length > 1 ? 'fn_picking_zonas_detalle' : 'fn_picking_zona_detalle';
+    const params = activeZonas.length > 1
+      ? { p_zonas: activeZonas, p_offset: 0, p_limit: 9999 }
+      : { p_zona: activeZonas[0], p_offset: 0, p_limit: 9999 };
     Promise.all([
-      supabase.from('zona_picking_raw').select('raw_data').range(0, 14999),
-      supabase.rpc('fn_picking_zona_resumen'),
+      supabase.rpc(rpc, params),
       supabase.from('zona_picking_distribucion_columnas').select('*').order('orden'),
-    ]).then(([{data: rawData}, {data: zonResumen}, {data: cols}]) => {
-      // Map raw article rows
-      const mapped: DistribRow[] = ((rawData ?? []) as any[]).map(r => {
-        const d = r.raw_data as Record<string, unknown>;
-        return { ubicacion:String(d['Ubicación']??''), id_articulo:String(d['Id Artículo']??''), descripcion:String(d['Descripción']??''), pct_picking:toN(d['% Picking']), cant_max:toN(d['Cantidad Máxima']), cant_min:toN(d['Cantidad Mínima']), compania:String(d['Compañía']??d['Id Compañía']??''), zona_picking:String(d['Zona Picking']??'') };
-      });
+    ]).then(([{data: rpcData}, {data: cols}]) => {
+      // RPC already returns cleaned numeric values
+      const mapped: DistribRow[] = ((rpcData ?? []) as any[]).map((r: any) => ({
+        ubicacion: String(r.ubicacion ?? ''),
+        id_articulo: String(r.id_articulo ?? ''),
+        descripcion: String(r.descripcion ?? ''),
+        pct_picking: Number(r.pct_picking) || 0,
+        cant_max: Number(r.cant_max) || 0,
+        cant_min: Number(r.cant_min) || 0,
+        compania: String(r.compania ?? ''),
+        zona_picking: String(r.zona_picking ?? activeZonas[0] ?? ''),
+      }));
       setRows(mapped);
-      // Build ubicación map from fn_picking_zona_ubicaciones for ALL zones
-      // We do it from the raw rows themselves for simplicity
+      // Build ubicMap from the loaded rows
       const ubMap: Record<string, UbicData> = {};
+      const pctAcc: Record<string, number> = {};
       for (const r of mapped) {
         if (!ubMap[r.ubicacion]) ubMap[r.ubicacion] = { total_articulos:0, suma_cant_max:0, suma_cant_min:0, pct_picking_promedio:0 };
         ubMap[r.ubicacion].total_articulos++;
         ubMap[r.ubicacion].suma_cant_max += r.cant_max;
         ubMap[r.ubicacion].suma_cant_min += r.cant_min;
+        pctAcc[r.ubicacion] = (pctAcc[r.ubicacion] ?? 0) + r.pct_picking;
       }
-      // Compute avg pct_picking per ubicacion
-      const pctAccum: Record<string, number> = {};
-      for (const r of mapped) { pctAccum[r.ubicacion] = (pctAccum[r.ubicacion] ?? 0) + r.pct_picking; }
-      for (const k of Object.keys(ubMap)) { ubMap[k].pct_picking_promedio = ubMap[k].total_articulos > 0 ? pctAccum[k] / ubMap[k].total_articulos : 0; }
+      for (const k of Object.keys(ubMap)) ubMap[k].pct_picking_promedio = ubMap[k].total_articulos > 0 ? pctAcc[k] / ubMap[k].total_articulos : 0;
       setUbicMap(ubMap);
       setColumnas((cols ?? []) as DistribCol[]);
       setLoading(false);
     });
-  }, []);
+  }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const zonas = useMemo(() => [...new Set(rows.map(r => r.zona_picking).filter(Boolean))].sort(), [rows]);
 
@@ -611,7 +619,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
   const systemVarDefs = useMemo(() => { try { return buildVariableDefs(toAllDataSources(formulaCtx)); } catch { return []; } }, [formulaCtx]);
   const systemVarMap  = useMemo(() => { if (!systemVarDefs.length) return {}; try { return buildVariableMap(systemVarDefs, toAllDataSources(formulaCtx)); } catch { return {}; } }, [formulaCtx, systemVarDefs]);
 
-  const totalArtsZona = useMemo(() => rows.filter(r => !filterZona || r.zona_picking === filterZona).length, [rows, filterZona]);
+  const totalArtsZona = rows.length;
   const colNameToToken = useCallback((n: string) => n.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), []);
 
   const buildRowVarMapDistrib = useCallback((row: DistribRow) => {
@@ -673,7 +681,6 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
 
   const filtered = useMemo(() => {
     let r = rows;
-    if (filterZona) r = r.filter(x => x.zona_picking === filterZona);
     if (search) {
       const q = search.toLowerCase();
       r = r.filter(x => x.id_articulo.toLowerCase().includes(q) || x.descripcion.toLowerCase().includes(q) || x.ubicacion.toLowerCase().includes(q) || x.compania.toLowerCase().includes(q));
@@ -694,9 +701,9 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
   return (
     <div className="space-y-3">
       <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
-        <p className="text-sm font-semibold text-indigo-800">Tabla de Distribución Slot Prime</p>
+        <p className="text-sm font-semibold text-indigo-800">Distribución Slot Prime — artículos individuales de la zona seleccionada</p>
         <p className="text-xs text-indigo-500 mt-0.5">
-          Un artículo por fila · <code className="bg-indigo-100 px-1 rounded">{'{TOTAL_ARTICULOS}'}</code> = artículos en la misma ubicación ·
+          Responde al cluster/zona activo · <code className="bg-indigo-100 px-1 rounded">{'{TOTAL_ARTICULOS}'}</code> artículos en misma ubicación ·
           <code className="bg-indigo-100 px-1 rounded ml-1">{'{PCT_PICKING}'}</code> · <code className="bg-indigo-100 px-1 rounded ml-1">{'{CANT_MAX}'}</code> + variables del sistema
         </p>
       </div>
@@ -740,12 +747,6 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
-        {/* Zone filter */}
-        <select value={filterZona} onChange={e => { setFilterZona(e.target.value); setPage(0); }}
-          className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 outline-none bg-white text-slate-700">
-          <option value="">Todas las zonas ({rows.length})</option>
-          {zonas.map(z => <option key={z} value={z}>{z}</option>)}
-        </select>
         {/* Search */}
         <div className="relative flex-1 min-w-[220px]">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i className="ri-search-line text-sm text-slate-400"/></div>
@@ -775,7 +776,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars }: { formulaCtx: For
             </thead>
             <tbody>
               {paged.length === 0 ? (
-                <tr><td colSpan={8} className="px-3 py-10 text-center text-slate-400">{search || filterZona ? 'Sin resultados' : 'Sin datos'}</td></tr>
+                <tr><td colSpan={8} className="px-3 py-10 text-center text-slate-400">{search ? 'Sin resultados' : 'Sin datos'}</td></tr>
               ) : paged.map((row, i) => (
                 <tr key={`${row.zona_picking}|${row.ubicacion}|${row.id_articulo}|${i}`} className={`border-t border-slate-100 hover:bg-indigo-50/40 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
                   <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis" title={row.zona_picking}>{row.zona_picking || '—'}</td>
@@ -1082,7 +1083,7 @@ export default function CostoZonaPickingPage() {
           ):(
             <div className="px-6 py-4">
               <div className="flex gap-1 mb-4 flex-wrap">
-                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Picking'},{id:'distribucion',icon:'ri-grid-line',label:'Distribución Slot Prime'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
+                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Picking'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id as Tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${tab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                     <i className={`${t.icon} text-[11px]`}/>{t.label}
                   </button>
@@ -1191,10 +1192,20 @@ export default function CostoZonaPickingPage() {
                       extraVars={varColValues}
                     />
                   )}
+
+                  {/* ── Distribución Slot Prime integrada — responde al cluster/zona activo ── */}
+                  {activeZonas.length > 0 && (
+                    <div className="mt-2 border-t border-slate-200 pt-4">
+                      <TablaDistribucionSlotPrime
+                        formulaCtx={formulaCtx}
+                        extraVars={varColValues}
+                        activeZonas={activeZonas}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
-              {tab==='distribucion'&&<TablaDistribucionSlotPrime formulaCtx={formulaCtx} extraVars={varColValues}/>}
               {tab==='datos'&&<RawTable headers={masivoInfo?.headers??[]}/>}
             </div>
           )}
