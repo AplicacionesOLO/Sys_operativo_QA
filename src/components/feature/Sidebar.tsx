@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { MODULES } from '@/types/auth';
@@ -24,6 +25,19 @@ const MODULE_PATHS: Record<string, string> = {
   configuracion: '/configuracion',
 };
 
+// Items that live inside the "Costos" collapsible group
+const COSTOS_GROUP = [
+  { key: 'costos-outbound',    label: 'Costos Outbound',     icon: 'ri-archive-line' },
+  { key: 'costos-crossdocking',label: 'Costos Crossdocking', icon: 'ri-arrow-left-right-line' },
+  { key: 'costos-inbound',     label: 'Costos Inbound',      icon: 'ri-logout-box-line' },
+  { key: 'costos-movimientos', label: 'Costos Movimientos',  icon: 'ri-truck-line' },
+  { key: 'conteo-slots',       label: 'Costos de Slots',     icon: 'ri-layout-grid-line' },
+  { key: 'zona-picking',       label: 'Costo Zona Picking',  icon: 'ri-map-pin-line' },
+  { key: 'almacen',            label: 'Costos Almacén',      icon: 'ri-store-2-line' },
+];
+
+const COSTOS_PATHS = COSTOS_GROUP.map(i => MODULE_PATHS[i.key]);
+
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
@@ -34,12 +48,30 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const navigate = useNavigate();
   const { profile, role, canView, signOut } = useAuth();
 
+  const isCostosActive = COSTOS_PATHS.some(p => location.pathname === p || location.pathname.startsWith(p + '/'));
+  const [costosOpen, setCostosOpen] = useState(isCostosActive);
+
+  // Auto-open group when navigating to a costos sub-route
+  useEffect(() => {
+    if (isCostosActive) setCostosOpen(true);
+  }, [isCostosActive]);
+
   const handleSignOut = async () => {
     await signOut();
     navigate('/login');
   };
 
   const visibleModules = MODULES.filter((m) => canView(m.key));
+
+  // Shared nav link class builder
+  const navClass = (isActive: boolean, extra = '') =>
+    `flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap group ${
+      collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
+    } ${
+      isActive
+        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+        : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+    } ${extra}`;
 
   return (
     <aside
@@ -60,13 +92,11 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </div>
           </div>
         )}
-
         {collapsed && (
           <div className="w-9 h-9 flex items-center justify-center rounded-lg bg-emerald-500">
             <i className="ri-bar-chart-box-line text-white text-lg" />
           </div>
         )}
-
         <button
           onClick={onToggle}
           className={`w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer transition-colors shrink-0 ${
@@ -85,45 +115,97 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         )}
         {collapsed && <div className="mb-2" />}
 
+        {/* ── Regular modules (from permissions + fixed ones) ── */}
         {[
           ...visibleModules.filter((m) => m.key !== 'configuracion'),
-          { key: 'cotizaciones', label: 'Cotizaciones', icon: 'ri-file-list-3-line' },
+          { key: 'cotizaciones',   label: 'Cotizaciones',   icon: 'ri-file-list-3-line' },
           { key: 'vol-distribucion', label: 'Dist. Volumen', icon: 'ri-pie-chart-2-line' },
-          { key: 'factores', label: 'Factores', icon: 'ri-equalizer-line' },
-          { key: 'costos-outbound', label: 'Costos Outbound', icon: 'ri-archive-line' },
-          { key: 'costos-crossdocking', label: 'Costos Crossdocking', icon: 'ri-arrow-left-right-line' },
-          { key: 'costos-inbound', label: 'Costos Inbound', icon: 'ri-logout-box-line' },
-          { key: 'costos-movimientos', label: 'Costos Movimientos', icon: 'ri-truck-line' },
-          { key: 'conteo-slots', label: 'Costos de Slots', icon: 'ri-layout-grid-line' },
-          { key: 'zona-picking', label: 'Costo Zona Picking', icon: 'ri-map-pin-line' },
-          { key: 'almacen', label: 'Costos Almacén', icon: 'ri-store-2-line' },
+          { key: 'factores',       label: 'Factores',       icon: 'ri-equalizer-line' },
         ].map((item) => {
-            const path = MODULE_PATHS[item.key];
-            const isActive =
-              location.pathname === path ||
-              (path !== '/' && location.pathname.startsWith(path));
-            return (
-              <NavLink
-                key={item.key}
-                to={path}
-                title={collapsed ? item.label : undefined}
-                className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap group ${
-                  collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
-                } ${
-                  isActive
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
-                }`}
-              >
-                <div className="w-5 h-5 flex items-center justify-center shrink-0">
-                  <i className={`${item.icon} text-base`} />
-                </div>
-                {!collapsed && <span className="truncate">{item.label}</span>}
-              </NavLink>
-            );
-          })}
+          const path = MODULE_PATHS[item.key];
+          if (!path) return null;
+          const isActive = location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
+          return (
+            <NavLink
+              key={item.key}
+              to={path}
+              title={collapsed ? item.label : undefined}
+              className={navClass(isActive)}
+            >
+              <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                <i className={`${item.icon} text-base`} />
+              </div>
+              {!collapsed && <span className="truncate">{item.label}</span>}
+            </NavLink>
+          );
+        })}
 
-        {/* Sistema: Configuración + Bitácora (admin only) */}
+        {/* ── Costos group ── */}
+        {!collapsed ? (
+          // Expanded sidebar: collapsible group
+          <div className="space-y-0.5">
+            <button
+              onClick={() => setCostosOpen(v => !v)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap ${
+                isCostosActive
+                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+              }`}
+              title="Módulos de Costos"
+            >
+              <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                <i className="ri-coins-line text-base" />
+              </div>
+              <span className="truncate flex-1 text-left">Costos</span>
+              <i className={`text-xs transition-transform duration-200 ${costosOpen ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'}`} />
+            </button>
+
+            {costosOpen && (
+              <div className="ml-3 pl-3 border-l border-slate-700/60 space-y-0.5 py-1">
+                {COSTOS_GROUP.map(item => {
+                  const path = MODULE_PATHS[item.key];
+                  const isActive = location.pathname === path || location.pathname.startsWith(path + '/');
+                  return (
+                    <NavLink
+                      key={item.key}
+                      to={path}
+                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
+                        isActive
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+                      }`}
+                    >
+                      <div className="w-4 h-4 flex items-center justify-center shrink-0">
+                        <i className={`${item.icon} text-sm`} />
+                      </div>
+                      <span className="truncate">{item.label}</span>
+                    </NavLink>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          // Collapsed sidebar: show a single group icon
+          // Clicking expands sidebar + opens group; individual items still accessible via tooltip
+          <>
+            <button
+              onClick={() => { onToggle(); setCostosOpen(true); }}
+              className={`w-full flex items-center justify-center py-2.5 rounded-lg text-sm transition-all cursor-pointer ${
+                isCostosActive
+                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+              }`}
+              title="Costos (expandir menú)"
+            >
+              <div className="w-5 h-5 flex items-center justify-center">
+                <i className="ri-coins-line text-base" />
+              </div>
+            </button>
+          </>
+        )}
+
+        {/* ── Sistema: Configuración + Bitácora (admin only) ── */}
         {(canView('configuracion') || role?.nombre === 'Administrador') && (
           <>
             <div className="pt-3 pb-1">
@@ -137,13 +219,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <NavLink
                 to="/configuracion"
                 title={collapsed ? 'Configuración' : undefined}
-                className={`flex items-center gap-3 rounded-lg text-sm font-medium transition-all cursor-pointer whitespace-nowrap ${
-                  collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
-                } ${
-                  location.pathname.startsWith('/configuracion')
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
-                }`}
+                className={navClass(location.pathname.startsWith('/configuracion'))}
               >
                 <div className="w-5 h-5 flex items-center justify-center shrink-0">
                   <i className="ri-settings-3-line text-base" />
