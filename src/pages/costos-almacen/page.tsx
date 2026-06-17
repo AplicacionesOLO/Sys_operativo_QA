@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, toAllDataSources, calcularFormula } from '@/lib/formulaEngine';
@@ -131,6 +132,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
   const [pickingRpcOk, setPickingRpcOk] = useState<boolean|null>(null); // null=no intentado, true=ok, false=RPC no existe
   const [artUbicMap, setArtUbicMap] = useState<Record<string, ArtUbicData>>({});
   const [aggRows, setAggRows] = useState<AggRow[]>([]);
+  const [artSlotCostMap, setArtSlotCostMap] = useState<Record<string, Record<string, number>>>({});
   const [showArtUbicTable, setShowArtUbicTable] = useState(false);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -315,6 +317,28 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
     setSlotCostos(cosMap);
   }, [slotStats, slotRawCols, slotTdMap, systemVarMap_sc]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Build article-level slot cost averages from per-location costs × rows
+  useEffect(() => {
+    if (!rows.length || !slotCostoCols.length) { setArtSlotCostMap({}); return; }
+    const acc: Record<string, Record<string, {s:number;c:number}>> = {};
+    for (const r of rows) {
+      if (!acc[r.articulo]) acc[r.articulo] = {};
+      for (const col of slotCostoCols) {
+        const tk = col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase();
+        const v = slotCostos[r.ubicacion]?.[`name:${col.nombre}`] ?? 0;
+        if (!acc[r.articulo][tk]) acc[r.articulo][tk] = {s:0,c:0};
+        acc[r.articulo][tk].s += v;
+        acc[r.articulo][tk].c++;
+      }
+    }
+    const am: Record<string, Record<string, number>> = {};
+    for (const [art, cols] of Object.entries(acc)) {
+      am[art] = {};
+      for (const [k, {s,c}] of Object.entries(cols)) am[art][k] = c>0 ? s/c : 0;
+    }
+    setArtSlotCostMap(am);
+  }, [rows, slotCostos, slotCostoCols]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const systemVarDefs = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
   const systemVarMap  = useMemo(():Record<string,number>=>{if(!systemVarDefs.length)return{};try{return buildVariableMap(systemVarDefs,toAllDataSources(formulaCtx));}catch{return {};}},[ formulaCtx,systemVarDefs]);
   const colNameToToken = useCallback((n: string) => n.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), []);
@@ -332,13 +356,14 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       CANT_UBICACIONES:   row.cantidad_ubicaciones,
       UBICACIONES_ZONA:   Object.keys(ubicMap).length,
       SLOT_TOTAL: 0, SLOT_LIBRES: 0, SLOT_PCT_LIBRES: 0,
+      ...(artSlotCostMap[row.articulo] ?? {}),
       CANT_MAXIMA:  pick.cant_maxima,
       CANT_MINIMA:  pick.cant_minima,
       PCT_PICKING:  pick.pct_picking,
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, volMap, aggRows.length, pickingMatchMap, extraVars, systemVarMap]);
+  }, [ubicMap, volMap, aggRows.length, pickingMatchMap, artSlotCostMap, extraVars, systemVarMap]);
 
   // Computed formula cells — one row per article (aggregated by article)
   const computedCols = useMemo(() => {
@@ -424,6 +449,31 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
   };
   const handleDragEnd = useCallback((event:DragEndEvent)=>{const{active,over}=event;if(!over||active.id===over.id)return;const cur=colOrder;const oi=cur.indexOf(String(active.id));const ni=cur.indexOf(String(over.id));if(oi===-1||ni===-1)return;},[colOrder]);
 
+  const handleExport = useCallback(() => {
+    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : '';
+    // Sheet 1 — main data
+    const fixedHeaders = ['Artículo','Descripción','Zona Almacenaje','Cant. Ubicaciones','Σ Cant. Unidades','Σ Cant. Alm.','Volumen','Compañía'];
+    const colHeaders = columnas.map(c => c.nombre);
+    const headers1 = [...fixedHeaders, ...colHeaders];
+    const rows1 = sortedRows.map(r => [
+      r.articulo, r.descripcion, r.zona_almacenaje, r.cantidad_ubicaciones,
+      r.cantidad_unidades, r.cantidad_almacenaje, fmtN(volMap[r.articulo] ?? 0), r.compania,
+      ...columnas.map(c => fmtN(computedCols[c.id]?.[r.articulo]?.value)),
+    ]);
+    // Sheet 2 — formula details
+    const headers2 = ['Columna','Expresión','Ejemplo (primer artículo)'];
+    const sampleArt = sortedRows[0]?.articulo ?? '';
+    const rows2 = columnas.map(c => [
+      c.nombre,
+      c.formula ?? '(sin fórmula)',
+      fmtN(computedCols[c.id]?.[sampleArt]?.value),
+    ]);
+    downloadExcelMultiSheet(`costos_almacen_${activeZonas.join('_').slice(0,40)}.xlsx`, [
+      { name: 'Datos', headers: headers1, rows: rows1 },
+      ...(rows2.length > 0 ? [{ name: 'Fórmulas', headers: headers2, rows: rows2 }] : []),
+    ]);
+  }, [sortedRows, columnas, computedCols, volMap, activeZonas]);
+
   if(loading)return<div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"/></div>;
 
   return(
@@ -462,7 +512,10 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       <div className="bg-white border border-teal-200 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-teal-100 bg-teal-50 flex items-center justify-between">
           <div><p className="text-xs font-semibold text-teal-700">Columnas de fórmula por artículo</p><p className="text-[10px] text-teal-400 mt-0.5">{ALMACEN_TOKENS.slice(0,4).map(t=>t.token).join(' · ')}</p></div>
-          {!addingCol && <button onClick={()=>setAddingCol(true)} className="flex items-center gap-1 px-3 py-1.5 bg-teal-500 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>}
+          {!addingCol && <div className="flex items-center gap-2">
+            <button onClick={handleExport} className="flex items-center gap-1 px-3 py-1.5 border border-teal-300 text-teal-700 hover:bg-teal-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-file-excel-2-line"/>Descargar .xlsx</button>
+            <button onClick={()=>setAddingCol(true)} className="flex items-center gap-1 px-3 py-1.5 bg-teal-500 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>
+          </div>}
         </div>
         {addingCol && <div className="px-4 py-3 border-b border-teal-100 bg-teal-50/50 flex items-center gap-3"><input type="text" value={newColName} onChange={e=>setNewColName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCol();if(e.key==='Escape'){setAddingCol(false);setNewColName('');}}} placeholder="Nombre (ej: Costo por artículo)" className="flex-1 px-3 py-1.5 text-sm border border-teal-300 rounded-lg focus:outline-none bg-white" autoFocus/><button onClick={addCol} disabled={!newColName.trim()} className="px-3 py-1.5 bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs rounded-lg cursor-pointer">Crear</button><button onClick={()=>{setAddingCol(false);setNewColName('');}} className="px-3 py-1.5 text-slate-500 hover:bg-slate-100 text-xs rounded-lg cursor-pointer">Cancelar</button></div>}
         {columnas.length === 0 && !addingCol ? <p className="px-4 py-4 text-center text-slate-400 text-xs">Sin columnas. Agrega una con fórmula.</p> : (

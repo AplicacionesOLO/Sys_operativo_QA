@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from 'react';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import {
   DndContext,
   closestCenter,
@@ -338,6 +339,43 @@ export default function CostosTable({
     return { ...base, backgroundColor: bg };
   };
 
+  const handleExport = useCallback(() => {
+    const fmtN = (v: string|number|undefined|null) => {
+      const n = Number(v);
+      return isNaN(n) ? String(v ?? '') : Math.round(n*100)/100;
+    };
+    const formulaCols = columnas.filter(c => c.tipo === 'formula');
+    const headers1 = ['Proceso','Subproceso', ...columnas.map(c=>c.nombre), 'Total'];
+    const rows1 = filas.map(fila => {
+      const cells = columnas.map(col => {
+        if (col.tipo === 'formula') {
+          const f = fila.formulas?.[col.id] ?? col.formula;
+          if (!f) return '';
+          try { return fmtN(calcularFormula(f, ctx, fila.subproceso)); } catch { return ''; }
+        }
+        return fmtN(fila.valores?.[col.id]);
+      });
+      const total = columnas.reduce((s, col) => {
+        const f = col.tipo === 'formula' ? (fila.formulas?.[col.id] ?? col.formula) : null;
+        const v = f ? calcularFormula(f, ctx, fila.subproceso) : Number(fila.valores?.[col.id] ?? 0);
+        return isNaN(v) ? s : s + v;
+      }, 0);
+      return [fila.proceso, fila.subproceso, ...cells, fmtN(total)];
+    });
+    const headers2 = ['Columna','Modo','Expresión / Términos'];
+    const rows2 = formulaCols.map(col => {
+      const f = col.formula;
+      if (!f) return [col.nombre, '—', '—'];
+      if (f.mode === 'expression') return [col.nombre, 'Expresión', f.expression ?? ''];
+      const terms = (f.terms ?? []).map(t => `${t.variable}×${t.factor}`).join(' + ');
+      return [col.nombre, 'Términos', terms];
+    });
+    downloadExcelMultiSheet('costos_operacion.xlsx', [
+      { name: 'Datos', headers: headers1, rows: rows1 },
+      ...(rows2.length > 0 ? [{ name: 'Fórmulas', headers: headers2, rows: rows2 }] : []),
+    ]);
+  }, [columnas, filas, ctx]);
+
   // The active column being dragged (for overlay)
   const activeCol = activeColId ? columnas.find(c => c.id === activeColId) : null;
   const activeColIdx = activeCol ? columnas.findIndex(c => c.id === activeColId) + 2 : -1;
@@ -345,28 +383,26 @@ export default function CostosTable({
   return (
     <div className="bg-white rounded-xl border border-slate-200">
 
-      {/* Freeze status badge */}
-      {frozenCols > 0 && (
-        <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2">
-          <div className="w-4 h-4 flex items-center justify-center">
-            <i className="ri-pushpin-fill text-xs text-emerald-500" />
-          </div>
-          <span className="text-xs text-slate-500">
-            {frozenCols === 1 && 'Columna fija: Proceso'}
-            {frozenCols === 2 && 'Columnas fijas: Proceso y Subproceso'}
-            {frozenCols > 2 && `Columnas fijas: Proceso, Subproceso + ${frozenCols - 2} más`}
-          </span>
-          <button
-            onClick={() => { setFrozenCols(0); localStorage.setItem(LS_KEY, '0'); }}
-            className="ml-auto text-xs text-slate-400 hover:text-rose-500 transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1"
-          >
-            <div className="w-3 h-3 flex items-center justify-center">
-              <i className="ri-close-line" />
+      {/* Toolbar: export + freeze status */}
+      <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 flex-wrap">
+        <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+          <i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx
+        </button>
+        {frozenCols > 0 && (
+          <>
+            <div className="w-px h-4 bg-slate-200"/>
+            <div className="flex items-center gap-1.5">
+              <i className="ri-pushpin-fill text-xs text-emerald-500"/>
+              <span className="text-xs text-slate-500">
+                {frozenCols === 1 && 'Columna fija: Proceso'}
+                {frozenCols === 2 && 'Columnas fijas: Proceso y Subproceso'}
+                {frozenCols > 2 && `Columnas fijas: Proceso, Subproceso + ${frozenCols - 2} más`}
+              </span>
+              <button onClick={()=>{setFrozenCols(0);localStorage.setItem(LS_KEY,'0');}} className="ml-1 text-xs text-slate-400 hover:text-rose-500 cursor-pointer flex items-center gap-0.5"><i className="ri-close-line text-xs"/>Quitar</button>
             </div>
-            Quitar fijas
-          </button>
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       <DndContext
         sensors={sensors}

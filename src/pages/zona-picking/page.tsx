@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, toAllDataSources, calcularFormula } from '@/lib/formulaEngine';
@@ -878,6 +879,29 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const toggleSort = (k: string) => { if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(k); setSortDir(columnas.some(c => c.id === k) ? 'desc' : 'asc'); } setPage(0); };
   const si = (k: string) => sortKey !== k ? 'ri-expand-up-down-line text-slate-300' : sortDir === 'asc' ? 'ri-sort-asc text-slate-700' : 'ri-sort-desc text-slate-700';
 
+  const handleExportDistrib = useCallback(() => {
+    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : '';
+    const rk = (r: DistribRow) => r.ubicacion+'|'+r.id_articulo;
+    const fixedH = ['Zona Picking','Ubicación','Id Artículo','Descripción','% Picking','Cant. Máx.','Cant. Mín.','Arts./Ubic.','Compañía','Volumen'];
+    const slotH = slotCostoCols.map(c=>c.nombre);
+    const colH = columnas.map(c=>c.nombre);
+    const headers1 = [...fixedH, ...slotH, ...colH];
+    const rows1 = filtered.map(r => [
+      r.zona_picking, r.ubicacion, r.id_articulo, r.descripcion,
+      fmtN(r.pct_picking), r.cant_max, r.cant_min, fmtN(ubicMap[r.ubicacion]?.total_articulos),
+      r.compania, fmtN(volMap[r.id_articulo]),
+      ...slotCostoCols.map(c => fmtN(slotCostos[r.ubicacion]?.[c.id])),
+      ...columnas.map(c => fmtN(computedCols[c.id]?.[rk(r)]?.value)),
+    ]);
+    const headers2 = ['Columna','Expresión','Ejemplo (primera fila)'];
+    const sampleKey = filtered[0] ? rk(filtered[0]) : '';
+    const rows2 = columnas.map(c => [c.nombre, c.formula??'(sin fórmula)', fmtN(computedCols[c.id]?.[sampleKey]?.value)]);
+    downloadExcelMultiSheet(`zona_picking_${activeZonas.join('_').slice(0,40)}.xlsx`, [
+      { name: 'Datos', headers: headers1, rows: rows1 },
+      ...(rows2.length > 0 ? [{ name: 'Fórmulas', headers: headers2, rows: rows2 }] : []),
+    ]);
+  }, [filtered, columnas, computedCols, slotCostoCols, slotCostos, ubicMap, volMap, activeZonas]);
+
   return (
     <div className="space-y-3">
       <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
@@ -896,7 +920,10 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
             <p className="text-xs font-semibold text-indigo-700">Columnas de fórmula — valor exacto por artículo</p>
             <p className="text-[10px] text-indigo-400 mt-0.5">Ej: <code className="bg-indigo-100 px-0.5 rounded">{'Costo = {COSTOS_TOTAL_*} * {PCT_PICKING} / 100 / {TOTAL_ARTICULOS}'}</code></p>
           </div>
-          {!addingCol && <button onClick={()=>setAddingCol(true)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>}
+          {!addingCol && <div className="flex items-center gap-2">
+            <button onClick={handleExportDistrib} className="flex items-center gap-1 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-file-excel-2-line"/>Descargar .xlsx</button>
+            <button onClick={()=>setAddingCol(true)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>
+          </div>}
         </div>
         {addingCol && (
           <div className="px-4 py-3 border-b border-indigo-100 bg-indigo-50/50 flex items-center gap-3">
