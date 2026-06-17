@@ -125,8 +125,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
   const [pickingRpcOk, setPickingRpcOk] = useState<boolean|null>(null); // null=no intentado, true=ok, false=RPC no existe
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
-  const [sortKey, setSortKey] = useState<string>('zona_almacenaje');
-  const [sortDir, setSortDir] = useState<'asc'|'desc'>('asc');
+  const [sortKey, setSortKey] = useState<string>('FIXED:volumen');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
   const [page, setPage] = useState(0);
   const [columnas, setColumnas] = useState<DistribCol[]>([]);
   const [addingCol, setAddingCol] = useState(false);
@@ -387,12 +387,34 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
   return(
     <div className="space-y-3">
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5"><p className="text-xs text-teal-600">Artículos</p><p className="text-base font-bold text-teal-700">{fmt(rows.length)}</p></div>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Unidades</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.cantidad_unidades,0))}</p></div>
-        <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5"><p className="text-xs text-cyan-600">Σ Volumen</p><p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</p></div>
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Ubicaciones</p><p className="text-base font-bold text-slate-700">{new Set(rows.map(r=>r.ubicacion)).size}</p></div>
-      </div>
+      {(() => {
+        const uniqArts = new Set(rows.map(r=>r.articulo));
+        const artsConVol = [...uniqArts].filter(a=>volMap[a]>0).length;
+        const artsConPick = [...uniqArts].filter(a=>pickingMatchMap[a]?.cant_maxima>0).length;
+        const pctVol = uniqArts.size>0?Math.round(artsConVol*100/uniqArts.size):0;
+        const pctPick = uniqArts.size>0?Math.round(artsConPick*100/uniqArts.size):0;
+        return (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5"><p className="text-xs text-teal-600">Artículos</p><p className="text-base font-bold text-teal-700">{fmt(rows.length)}<span className="text-xs font-normal text-teal-400 ml-1">({uniqArts.size} únicos)</span></p></div>
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Unidades</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.cantidad_unidades,0))}</p></div>
+              <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5">
+                <p className="text-xs text-cyan-600">Σ Volumen <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${pctVol>=80?'bg-green-100 text-green-700':pctVol>=50?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'}`}>{artsConVol}/{uniqArts.size} arts.</span></p>
+                <p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</p>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
+                <p className="text-xs text-slate-500">Picking (Máx/Mín) <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${pctPick>=80?'bg-green-100 text-green-700':pctPick>=50?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'}`}>{artsConPick}/{uniqArts.size} arts.</span></p>
+                <p className="text-base font-bold text-slate-700">{pctPick}% cobertura</p>
+              </div>
+            </div>
+            {(pctVol<80||pctPick<80) && (
+              <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                <i className="ri-information-line mr-1"/>Artículos sin cobertura no muestran datos en esas columnas. Tabla ordenada por Volumen descendente — primero los que tienen datos.
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Formula columns panel */}
       <div className="bg-white border border-teal-200 rounded-xl overflow-hidden">
