@@ -134,6 +134,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
   const [aggRows, setAggRows] = useState<AggRow[]>([]);
   const [artSlotCostMap, setArtSlotCostMap] = useState<Record<string, Record<string, number>>>({});
   const [showArtUbicTable, setShowArtUbicTable] = useState(false);
+  const [loadStep, setLoadStep] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<string>('FIXED:volumen');
@@ -156,47 +157,18 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     // Clear stale state from the previous zone/cluster immediately
     setRows([]); setAggRows([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null);
     setLoading(true);
-    const rpc = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_detalle' : 'fn_almacen_inv_zona_detalle';
-    const rpcUbic = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_ubicaciones' : 'fn_almacen_inv_zona_ubicaciones';
-    const baseParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
-
-    // Helper: fetch ALL rows bypassing PostgREST max_rows=1000.
-    // CHUNK=500 < max_rows(1000) → PostgREST never truncates → chunk.length<CHUNK = end of data.
-    // PARALLEL=3: 3 concurrent requests — fast (~5-15s) without saturating Supabase connections.
-    async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}, totalRows = 0): Promise<any[]> {
-      const CHUNK = 500;
-      const PARALLEL = 3;
-
-      // Build offsets list: if totalRows known use it, else cap at safety max
-      const maxOffset = totalRows > 0 ? totalRows : 150000;
-      const offsets: number[] = [];
-      for (let o = 0; o < maxOffset; o += CHUNK) offsets.push(o);
-
-      let all: any[] = [];
-      for (let i = 0; i < offsets.length; i += PARALLEL) {
-        const batch = offsets.slice(i, i + PARALLEL);
-        const results = await Promise.all(
-          batch.map(async (offset) => {
-            const { data, error } = await supabase
-              .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK });
-            if (error) { console.warn(`[fetchAllPages] offset ${offset} error:`, error.message); return []; }
-            return (data ?? []) as any[];
-          })
-        );
-        const chunks = results.flat();
-        all = [...all, ...chunks];
-        // Stop if any chunk in this batch was smaller than CHUNK (end of data reached)
-        if (results.some(r => r.length < CHUNK)) break;
-      }
-      return all;
-    }
+    // Use JSON-returning functions — PostgREST max_rows does NOT apply to scalar/json returns
+    const rpcAll = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_all' : 'fn_almacen_inv_zona_all';
+    const rpcParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
     (async () => {
-      // Only fetch detail rows + columns — ubicaciones are derived from rows (no separate RPC)
-      const [invData, { data: colsData }] = await Promise.all([
-        fetchAllPages(rpc, {}, expectedRows),
+      setLoadStep(`Cargando inventario (${fmt(expectedRows)} filas esperadas)...`);
+      // Single request — entire dataset as JSON, bypasses PostgREST max_rows
+      const [{ data: invJson }, { data: colsData }] = await Promise.all([
+        supabase.rpc(rpcAll, rpcParams),
         supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
+      const invData: any[] = Array.isArray(invJson) ? invJson : [];
 
       const mapped: InvRow[] = ((invData ?? []) as any[]).map((r: any) => ({
         articulo: String(r.articulo ?? ''), ubicacion: String(r.ubicacion ?? ''),
@@ -255,6 +227,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       setArtUbicMap(am);
       setAggRows(aggArr);
 
+      setLoadStep(`Inventario: ${fmt(filteredMapped.length)} filas · ${fmt(aggArr.length)} artículos únicos. Cargando volumetría...`);
+
       // Load volumetria
       const articulos = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
       if (articulos.length > 0) {
@@ -275,6 +249,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
         setVolMap(vm);
       }
 
+      setLoadStep('Cargando Máximos/Mínimos (Zona Picking)...');
       // Load picking match data (Máximos, Mínimos, % Picking from Zona Picking)
       // Match key: Artículo ONLY — company IDs differ between inventario and zona_picking
       // (same rationale as volMap: picking params are intrinsic to the article, not the company)
@@ -301,6 +276,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
         }
       }
 
+      setLoadStep('Cargando costos de slots...');
       // Load slot stats
       const ubicaciones = [...new Set(filteredMapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicaciones.length > 0) {
@@ -323,6 +299,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
         for (const c of rawCols) { if(!seen2.has(c.nombre)){seen2.add(c.nombre);uniqueCols.push({id:`name:${c.nombre}`,nombre:c.nombre,formula:c.formula});} }
         setSlotCostoCols(uniqueCols);
       }
+      setLoadStep('');
       setLoading(false);
     })();
   }, [activeZonas.join(','), filtros.filter(f=>f.activo).map(f=>f.patron).join(','), refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -510,7 +487,14 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     ]);
   }, [sortedRows, columnas, computedCols, volMap, activeZonas]);
 
-  if(loading)return<div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"/></div>;
+  if(loading)return(
+    <div className="flex flex-col items-center justify-center py-16 gap-3">
+      <div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"/>
+      {loadStep && (
+        <p className="text-xs text-slate-500 text-center max-w-xs px-4">{loadStep}</p>
+      )}
+    </div>
+  );
 
   return(
     <div className="space-y-3">
