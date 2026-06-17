@@ -742,6 +742,15 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
   const buildRowVarMapDistrib = useCallback((row: DistribRow) => {
     const ubic  = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cant_max:0, suma_cant_min:0, pct_picking_promedio:0 };
     const slot  = slotStats[row.ubicacion];
+
+    // Slot cost variables — one per formula column in Costos de Slots, linked by Ubicación
+    // Token = sanitized column name, e.g. "Costo por Slot" → COSTO_POR_SLOT
+    const slotCostVars: Record<string, number> = {};
+    for (const col of slotCostoCols) {
+      const token = col.nombre.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+      slotCostVars[token] = slotCostos[row.ubicacion]?.[`name:${col.nombre}`] ?? 0;
+    }
+
     return {
       // Article-level
       PCT_PICKING: row.pct_picking,
@@ -759,10 +768,12 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       SLOT_BLOQUEADOS: slot?.bloqueados ?? 0,
       SLOT_RESERVADOS: slot?.reservados ?? 0,
       SLOT_PCT_LIBRES: slot?.pct_libres ?? 0,
+      // Slot cost variables — e.g. COSTO_POR_SLOT = 17.80 for this specific Ubicación
+      ...slotCostVars,
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, slotStats, totalArtsZona, extraVars, systemVarMap]);
+  }, [ubicMap, slotStats, slotCostoCols, slotCostos, totalArtsZona, extraVars, systemVarMap]);
 
   // Computed formula values per row (key = id_articulo + ubicacion)
   const computedCols = useMemo(() => {
@@ -1003,8 +1014,15 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
           label: pc.nombre + ' (columna anterior)',
           value: sRow ? (computedCols[pc.id]?.[sKey]?.value ?? undefined) : undefined,
         }));
+        // Slot cost tokens — one per configured formula in Costos de Slots, value depends on Ubicación
+        const slotCostTokens = slotCostoCols.map(col => ({
+          token: col.nombre.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase(),
+          label: `${col.nombre} (Costos de Slots · por ubicación)`,
+          value: sRow ? (slotCostos[sRow.ubicacion]?.[`name:${col.nombre}`] ?? 0) : undefined,
+        }));
         const allTokens = [
           ...DISTRIB_TOKENS.map(t => ({ token: t.token.replace(/\{|\}/g,''), label: t.label, value: sRow ? (buildRowVarMapDistrib(sRow) as any)[t.token.replace(/\{|\}/g,'')] : undefined })),
+          ...slotCostTokens,   // ← slot cost variables (COSTO_POR_SLOT, etc.)
           ...prevColTokens,
         ];
         const enrichedVarMap = sRow ? { ...buildRowVarMapDistrib(sRow), ...Object.fromEntries(prevCols.map(pc => [colNameToToken(pc.nombre), computedCols[pc.id]?.[sKey]?.value ?? 0])) } : systemVarMap;
