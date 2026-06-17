@@ -117,8 +117,8 @@ function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
 const ALMACEN_COL_KEY = 'almacen_global';
 
 // ── Distribution table (article-level) ────────────────────────────────────────
-function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refreshKey }: {
-  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; filtros: FiltroUbicacion[]; refreshKey: number;
+function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refreshKey, expectedRows }: {
+  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; filtros: FiltroUbicacion[]; refreshKey: number; expectedRows: number;
 }) {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
@@ -160,14 +160,33 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     const rpcUbic = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_ubicaciones' : 'fn_almacen_inv_zona_ubicaciones';
     const baseParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
-    // Helper: paginate RPC calls to bypass PostgREST max_rows cap.
-    // CHUNK must be LESS than max_rows (Supabase default = 1000).
-    // CHUNK=500 guarantees PostgREST never truncates (500 < 1000), so
-    // chunk.length < CHUNK reliably signals end-of-data.
-    // Safety cap: MAX_PAGES*500 = 150,000 rows max.
-    async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}): Promise<any[]> {
+    // Helper: fetch ALL rows bypassing PostgREST max_rows=1000.
+    // Uses parallel requests (PARALLEL batches at once) when expectedRows is known,
+    // otherwise falls back to sequential. CHUNK=500 < max_rows=1000.
+    async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}, totalRows = 0): Promise<any[]> {
       const CHUNK = 500;
-      const MAX_PAGES = 300; // safety: prevents infinite loop
+      const PARALLEL = 20; // concurrent requests per batch
+
+      const total = totalRows > 0 ? totalRows : 0;
+      if (total > 0) {
+        // FAST PATH: known total → compute all offsets → parallel batches
+        const offsets: number[] = [];
+        for (let o = 0; o < total; o += CHUNK) offsets.push(o);
+        let all: any[] = [];
+        for (let i = 0; i < offsets.length; i += PARALLEL) {
+          const batch = offsets.slice(i, i + PARALLEL);
+          const results = await Promise.all(
+            batch.map(offset =>
+              supabase.rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK })
+                .then(r => (r.data ?? []) as any[])
+            )
+          );
+          all = [...all, ...results.flat()];
+        }
+        return all;
+      }
+      // FALLBACK: unknown total → sequential with safety cap
+      const MAX_PAGES = 300;
       let all: any[] = [];
       let offset = 0;
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -175,7 +194,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
           .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK });
         if (!chunk || chunk.length === 0) break;
         all = [...all, ...chunk];
-        if (chunk.length < CHUNK) break; // End of data
+        if (chunk.length < CHUNK) break;
         offset += CHUNK;
       }
       return all;
@@ -183,8 +202,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
 
     (async () => {
       const [invData, ubicData, { data: colsData }] = await Promise.all([
-        fetchAllPages(rpc),
-        fetchAllPages(rpcUbic),
+        fetchAllPages(rpc, {}, expectedRows),
+        fetchAllPages(rpcUbic, {}, expectedRows),
         supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
 
@@ -603,7 +622,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
                     </td>
                     <td className="px-3 py-1.5 text-right font-medium text-slate-700 border-r border-slate-100">{fmt(row.cantidad_unidades)}</td>
                     <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{fmt(row.cantidad_almacenaje)}</td>
-                    <td className="px-3 py-1.5 text-right border-r border-slate-100"><span className={`font-medium ${vol>0?'text-cyan-700':'text-slate-300'}`}>{vol>0?fmtVol(vol):'—'}</span></td>
+                    <td className="px-3 py-1.5 text-right border-r border-slate-100"><span className={`font-medium tabular-nums ${vol>0?'text-cyan-700':'text-slate-400'}`}>{fmtVol(vol)}</span></td>
                     <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{row.compania||'—'}</td>
                     {columnas.map(col=>{const cell=computedCols[col.id]?.[row.articulo];const hasF=!!col.formula?.trim();return<td key={col.id} onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx:ci,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className={`px-3 py-1.5 text-right border-r border-slate-100 cursor-pointer transition-colors ${hasF?'hover:bg-teal-100/60':'hover:bg-slate-100'}`}>{hasF?cell?.value!=null?<span className="text-teal-700 font-bold tabular-nums">{fmtDec(cell.value!)}</span>:<span className="text-slate-300">—</span>:<span className="text-slate-300 text-[10px]">—</span>}</td>;})}
                     <td className="px-1 py-1.5"/>
@@ -771,6 +790,11 @@ export default function CostosAlmacenPage() {
   const activeCluster = activeSelection.type === 'cluster' ? activeSelection.cluster : null;
   const activeZonas = isCluster ? (activeCluster?.zonas ?? []) : (activeZona ? [activeZona] : []);
   const zonaLabel = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZona;
+  // Sum of total_articulos (row count) for active zones — used by TablaDistribucion to parallelize fetching
+  const expectedRows = useMemo(
+    () => activeZonas.reduce((s, z) => s + (zonaResumen.find(r => r.zona === z)?.total_articulos ?? 0), 0),
+    [activeZonas, zonaResumen]
+  );
 
   const { clusters, loadClusters } = useZonaClusters('costos_almacen_inv_clusters');
 
@@ -932,6 +956,7 @@ export default function CostosAlmacenPage() {
                       activeZonas={activeZonas}
                       filtros={filtros}
                       refreshKey={refreshKey}
+                      expectedRows={expectedRows}
                     />
                   )}
                 </div>
