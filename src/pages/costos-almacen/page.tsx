@@ -25,6 +25,7 @@ interface DistribCol { id: string; nombre: string; formula?: string; orden: numb
 interface MasivoInfo { totalRegistros: number; headers: string[]; volRecords: number; }
 interface PickingMatch { cant_maxima: number; cant_minima: number; pct_picking: number; }
 interface FiltroUbicacion { id: string; patron: string; descripcion: string; activo: boolean; }
+interface ArtUbicData { cantidad_ubicaciones: number; suma_cantidad: number; }
 type Tab = 'resumen' | 'zonas' | 'datos' | 'reglas';
 type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
 
@@ -42,6 +43,8 @@ const ALMACEN_TOKENS = [
   { token: '{SLOT_TOTAL}',          label: 'Slots totales',              desc: 'Total de slots físicos en esta Ubicación (Costos de Slots)' },
   { token: '{SLOT_LIBRES}',         label: 'Slots libres',               desc: 'Slots con estado Libre' },
   { token: '{SLOT_PCT_LIBRES}',     label: '% Slots libres',             desc: '% de slots libres en esta Ubicación' },
+  { token: '{CANT_UBICACIONES}',    label: 'Cantidad de ubicaciones del artículo', desc: 'Cuántas ubicaciones distintas ocupa este artículo en la zona (con filtros aplicados)' },
+  { token: '{UBICACIONES_ZONA}',    label: 'Total ubicaciones en zona',  desc: 'Total de ubicaciones distintas en la zona/cluster activo (con filtros)' },
   { token: '{CANT_MAXIMA}',         label: 'Cantidad Máxima (Picking)',  desc: 'Cantidad Máxima del artículo en esta ubicación (Zona Picking)' },
   { token: '{CANT_MINIMA}',         label: 'Cantidad Mínima (Picking)',  desc: 'Cantidad Mínima del artículo en esta ubicación (Zona Picking)' },
   { token: '{PCT_PICKING}',         label: '% Picking',                  desc: '% de picking de este artículo en esta ubicación (Zona Picking)' },
@@ -124,6 +127,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
   const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
   const [pickingMatchMap, setPickingMatchMap] = useState<Record<string, PickingMatch>>({});
   const [pickingRpcOk, setPickingRpcOk] = useState<boolean|null>(null); // null=no intentado, true=ok, false=RPC no existe
+  const [artUbicMap, setArtUbicMap] = useState<Record<string, ArtUbicData>>({});
+  const [showArtUbicTable, setShowArtUbicTable] = useState(false);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<string>('FIXED:volumen');
@@ -172,13 +177,29 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       setRows(filteredMapped);
       setColumnas((colsData ?? []) as DistribCol[]);
 
-      // Build ubicacion map
+      // Apply filter rules to ubicaciones table too
+      const filtUbicRows = activeFiltros.length > 0
+        ? ((ubicData ?? []) as any[]).filter((r:any) => !activeFiltros.some(f => String(r.ubicacion??'').toUpperCase().includes(f.patron.toUpperCase())))
+        : (ubicData ?? []) as any[];
+      setUbicRows(filtUbicRows);
+
+      // Build ubicacion map from filtered ubicaciones
       const ubMap: Record<string, UbicData> = {};
-      for (const r of (ubicData ?? []) as any[]) {
+      for (const r of filtUbicRows) {
         ubMap[String(r.ubicacion ?? '')] = { total_articulos: Number(r.total_articulos)||0, suma_cantidad: Number(r.suma_cantidad)||0, suma_cantidad_alm: Number(r.suma_cantidad_alm)||0, companias: String(r.companias??'') };
       }
       setUbicMap(ubMap);
-      setUbicRows((ubicData ?? []) as any[]);
+
+      // Build artUbicMap: for each article, count distinct (filtered) locations
+      const aMap: Record<string, {ubicSet: Set<string>; suma: number}> = {};
+      for (const r of filteredMapped) {
+        if (!aMap[r.articulo]) aMap[r.articulo] = { ubicSet: new Set(), suma: 0 };
+        aMap[r.articulo].ubicSet.add(r.ubicacion);
+        aMap[r.articulo].suma += r.cantidad_unidades;
+      }
+      const am: Record<string, ArtUbicData> = {};
+      for (const [art, v] of Object.entries(aMap)) am[art] = { cantidad_ubicaciones: v.ubicSet.size, suma_cantidad: v.suma };
+      setArtUbicMap(am);
 
       // Load volumetria
       const articulos = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
@@ -284,6 +305,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
     const ubic = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cantidad:0, suma_cantidad_alm:0, companias:'' };
     const slot = slotStats[row.ubicacion];
     const pick = pickingMatchMap[row.articulo] ?? { cant_maxima:0, cant_minima:0, pct_picking:0 };
+    const artUbic = artUbicMap[row.articulo] ?? { cantidad_ubicaciones:0, suma_cantidad:0 };
     const slotCostVars: Record<string, number> = {};
     for (const col of slotCostoCols) { slotCostVars[col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase()] = slotCostos[row.ubicacion]?.[`name:${col.nombre}`] ?? 0; }
     return {
@@ -297,11 +319,13 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       CANT_MAXIMA: pick.cant_maxima,
       CANT_MINIMA: pick.cant_minima,
       PCT_PICKING: pick.pct_picking,
+      CANT_UBICACIONES: artUbic.cantidad_ubicaciones,
+      UBICACIONES_ZONA: Object.keys(ubicMap).length,
       ...slotCostVars,
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, pickingMatchMap, extraVars, systemVarMap]);
+  }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, pickingMatchMap, artUbicMap, extraVars, systemVarMap]);
 
   // Computed formula cells — always per-row so every variable is available
   const computedCols = useMemo(() => {
@@ -520,10 +544,74 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
 
       {totalPages>1&&<div className="flex items-center justify-between gap-3 pt-1"><span className="text-xs text-slate-400">{page*PAGE+1}–{Math.min((page+1)*PAGE,sortedRows.length)} de {sortedRows.length}</span><div className="flex items-center gap-1"><button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap"><i className="ri-arrow-left-s-line"/>Anterior</button><button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap">Siguiente<i className="ri-arrow-right-s-line"/></button></div></div>}
 
-      {/* Collapsible ubicacion table */}
+      {/* Collapsible: Artículos × Ubicaciones (NEW — article is primary, locations are counted) */}
+      {(() => {
+        const artUbicRows = Object.entries(artUbicMap)
+          .map(([art, v]) => {
+            const sample = rows.find(r => r.articulo === art);
+            return { articulo: art, descripcion: sample?.descripcion ?? '', compania: sample?.compania ?? '', ...v };
+          })
+          .sort((a, b) => b.cantidad_ubicaciones - a.cantidad_ubicaciones);
+        const totalUbic = Object.keys(ubicMap).length;
+        return (
+          <div className="mt-3 border-t border-slate-200 pt-3">
+            <button onClick={()=>setShowArtUbicTable(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded-xl text-sm font-medium text-violet-700 transition-colors cursor-pointer">
+              <i className="ri-bar-chart-box-line text-sm"/>
+              <span>Cantidad de ubicaciones por artículo</span>
+              <span className="text-[11px] text-violet-400 font-normal ml-1">· {artUbicRows.length} artículos · {totalUbic} ubicaciones (filtros activos)</span>
+              <i className={`ri-arrow-${showArtUbicTable?'up':'down'}-s-line text-violet-400 ml-auto`}/>
+            </button>
+            {showArtUbicTable && (
+              <div className="mt-3 border border-violet-200 rounded-lg overflow-auto max-h-[55vh]">
+                <table className="text-xs whitespace-nowrap w-full">
+                  <thead>
+                    <tr className="bg-violet-50 sticky top-0 z-10">
+                      <th className="px-3 py-2.5 text-left text-violet-600 font-semibold border-r border-violet-100">Artículo</th>
+                      <th className="px-3 py-2.5 text-left text-violet-600 font-semibold border-r border-violet-100 max-w-[260px]">Descripción</th>
+                      <th className="px-3 py-2.5 text-right text-violet-600 font-semibold border-r border-violet-100 cursor-pointer hover:bg-violet-100" title="Variable disponible: {CANT_UBICACIONES}">
+                        <i className="ri-map-pin-line mr-1"/>Cant. Ubic. <code className="ml-1 text-[9px] bg-violet-100 px-1 rounded">{'{CANT_UBICACIONES}'}</code>
+                      </th>
+                      <th className="px-3 py-2.5 text-right text-violet-600 font-semibold border-r border-violet-100">Σ Cant. Unidades</th>
+                      <th className="px-3 py-2.5 text-left text-violet-600 font-semibold">Compañía</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {artUbicRows.map((r, i) => (
+                      <tr key={r.articulo+i} className={`border-t border-slate-100 hover:bg-violet-50/50 ${i%2===0?'bg-white':'bg-slate-50/30'}`}>
+                        <td className="px-3 py-2 font-medium text-violet-700 border-r border-slate-100">{r.articulo||'—'}</td>
+                        <td className="px-3 py-2 text-slate-600 border-r border-slate-100 max-w-[260px] overflow-hidden text-ellipsis" title={r.descripcion}>{r.descripcion||'—'}</td>
+                        <td className="px-3 py-2 text-right border-r border-slate-100">
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-violet-400 rounded-full" style={{width:`${totalUbic>0?Math.min((r.cantidad_ubicaciones/Math.max(...artUbicRows.map(x=>x.cantidad_ubicaciones),1))*100,100):0}%`}}/>
+                            </div>
+                            <span className="font-bold text-violet-700 w-6 text-right">{r.cantidad_ubicaciones}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(r.suma_cantidad)}</td>
+                        <td className="px-3 py-2 text-slate-400">{r.compania||'—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 bg-slate-100/80">
+                      <td className="px-3 py-2 font-semibold text-slate-600 text-xs" colSpan={2}>{artUbicRows.length} artículos únicos</td>
+                      <td className="px-3 py-2 text-right text-xs font-bold text-violet-700">{totalUbic} ubic. totales</td>
+                      <td className="px-3 py-2 text-right text-xs font-bold text-slate-700">{fmt(artUbicRows.reduce((s,r)=>s+r.suma_cantidad,0))}</td>
+                      <td className="px-3 py-2"/>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Collapsible ubicacion table (existing — location is primary, articles are counted) */}
       <div className="mt-3 border-t border-slate-200 pt-3">
         <button onClick={()=>setShowUbicTable(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-sm font-medium text-slate-600 transition-colors cursor-pointer">
-          <i className={`ri-${showUbicTable?'subtract':'add'}-line text-sm`}/>{showUbicTable?'Ocultar':'Ver'} tabla de ubicaciones por artículo<i className={`ri-arrow-${showUbicTable?'up':'down'}-s-line text-slate-400 ml-auto`}/>
+          <i className={`ri-${showUbicTable?'subtract':'add'}-line text-sm`}/>{showUbicTable?'Ocultar':'Ver'} tabla de artículos por ubicación<i className={`ri-arrow-${showUbicTable?'up':'down'}-s-line text-slate-400 ml-auto`}/>
         </button>
         {showUbicTable && (
           <div className="mt-3 border border-slate-200 rounded-lg overflow-auto max-h-[50vh]">
