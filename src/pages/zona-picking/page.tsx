@@ -561,11 +561,14 @@ const DISTRIB_TOKENS = [
   { token: '{SLOT_BLOQUEADOS}',       label: 'Slots bloqueados',         desc: 'Slots con estado Bloqueado' },
   { token: '{SLOT_RESERVADOS}',       label: 'Slots reservados',         desc: 'Slots con estado Reservado' },
   { token: '{SLOT_PCT_LIBRES}',       label: '% Slots libres',           desc: '% de slots libres en esta Ubicación' },
+  // Volumetría — cruzada desde costos_almacen_volumetria_raw por Id Artículo
+  { token: '{VOLUMEN}',               label: 'Volumen (Volumetría)',       desc: 'Volumen físico del artículo desde la tabla de Volumetría' },
 ];
 
 function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { formulaCtx: FormulaContext; extraVars: Record<string,number>; activeZonas: string[] }) {
   const [rows, setRows] = useState<DistribRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
+  const [volMap, setVolMap] = useState<Record<string, number>>({}); // id_articulo → volumen
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<string>('zona_picking');
@@ -633,6 +636,19 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       for (const k of Object.keys(ubMap)) ubMap[k].pct_picking_promedio = ubMap[k].total_articulos > 0 ? pctAcc[k] / ubMap[k].total_articulos : 0;
       setUbicMap(ubMap);
       setColumnas((cols ?? []) as DistribCol[]);
+
+      // Load volumetría cross-reference by Id Artículo
+      const articulos = [...new Set(mapped.map(r => r.id_articulo).filter(Boolean))];
+      if (articulos.length > 0) {
+        const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        const vm: Record<string, number> = {};
+        for (const v of (volData ?? []) as any[]) {
+          const art = String(v.id_articulo ?? '');
+          const vol = Number(v.volumen) || 0;
+          if (!vm[art] || vol > vm[art]) vm[art] = vol;
+        }
+        setVolMap(vm);
+      }
 
       // Load slot stats + compute slot costs from Costos de Slots module
       const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
@@ -756,6 +772,8 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       PCT_PICKING: row.pct_picking,
       CANT_MAX: row.cant_max,
       CANT_MIN: row.cant_min,
+      // Volumetría — cruzada desde costos_almacen_volumetria_raw por Id Artículo
+      VOLUMEN: volMap[row.id_articulo] ?? 0,
       // Ubicación-level (from grouped table)
       TOTAL_ARTICULOS: ubic.total_articulos,
       SUMA_CANT_MAX_UBIC: ubic.suma_cant_max,
@@ -773,7 +791,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, slotStats, slotCostoCols, slotCostos, totalArtsZona, extraVars, systemVarMap]);
+  }, [ubicMap, volMap, slotStats, slotCostoCols, slotCostos, totalArtsZona, extraVars, systemVarMap]);
 
   // Computed formula values per row (key = id_articulo + ubicacion)
   const computedCols = useMemo(() => {
@@ -826,9 +844,10 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     }
     return [...r].sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1;
-      if (sortKey === 'pct_picking') return (a.pct_picking - b.pct_picking) * dir;
-      if (sortKey === 'cant_max')    return (a.cant_max - b.cant_max) * dir;
-      if (sortKey === 'cant_min')    return (a.cant_min - b.cant_min) * dir;
+      if (sortKey === 'pct_picking')   return (a.pct_picking - b.pct_picking) * dir;
+      if (sortKey === 'cant_max')      return (a.cant_max - b.cant_max) * dir;
+      if (sortKey === 'cant_min')      return (a.cant_min - b.cant_min) * dir;
+      if (sortKey === 'FIXED:volumen') return ((volMap[a.id_articulo]??0) - (volMap[b.id_articulo]??0)) * dir;
       // Slot cost column sort
       if (sortKey.startsWith('SLOT:')) {
         const slotColId = sortKey.slice(5);
@@ -928,6 +947,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Cant. Mín.</th>
                 <th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artíc./Ubic.</th>
                 <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Compañía</th>
+                <th onClick={() => toggleSort('FIXED:volumen')} className="px-3 py-2.5 text-right text-cyan-600 font-semibold border-r border-slate-200 cursor-pointer hover:bg-cyan-100 bg-cyan-50 whitespace-nowrap"><i className="ri-box-3-line text-[10px] mr-1"/>Volumen <i className={`ml-0.5 ${si('FIXED:volumen')}`}/></th>
                 {/* Slot cost columns from Costos de Slots — matched by Ubicación code */}
                 {slotCostoCols.map(col => <th key={col.id} onClick={()=>toggleSort(`SLOT:${col.id}`)} className={`px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-emerald-100 bg-emerald-50 text-emerald-700`} title={`Fórmula (Costos de Slots): ${col.formula}`}><i className="ri-stack-line text-[10px] mr-1"/>{col.nombre} <i className={`ml-0.5 ${si(`SLOT:${col.id}`)}`}/></th>)}
                 {/* Custom formula columns */}
@@ -953,6 +973,8 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
                   <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{row.cant_min.toLocaleString('es-CO')}</td>
                   <td className="px-3 py-1.5 text-right text-indigo-600 font-semibold border-r border-slate-100">{fmt(ubicMap[row.ubicacion]?.total_articulos ?? 0)}</td>
                   <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{row.compania || '—'}</td>
+                  {/* Volumen from costos_almacen_volumetria_raw */}
+                  {(() => { const vol = volMap[row.id_articulo] ?? 0; return <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-cyan-50/40"><span className={vol>0?'text-cyan-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{vol>0?new Intl.NumberFormat('es-CO',{minimumFractionDigits:4,maximumFractionDigits:4}).format(vol):'—'}</span></td>; })()}
                   {/* Slot cost cells from Costos de Slots module */}
                   {slotCostoCols.map(col => {
                     const val = slotCostos[row.ubicacion]?.[col.id];
