@@ -24,7 +24,8 @@ interface UbicData { total_articulos: number; suma_cantidad: number; suma_cantid
 interface DistribCol { id: string; nombre: string; formula?: string; orden: number; }
 interface MasivoInfo { totalRegistros: number; headers: string[]; volRecords: number; }
 interface PickingMatch { cant_maxima: number; cant_minima: number; pct_picking: number; }
-type Tab = 'resumen' | 'zonas' | 'datos';
+interface FiltroUbicacion { id: string; patron: string; descripcion: string; activo: boolean; }
+type Tab = 'resumen' | 'zonas' | 'datos' | 'reglas';
 type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
 
 const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
@@ -110,8 +111,8 @@ function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
 const ALMACEN_COL_KEY = 'almacen_global';
 
 // ── Distribution table (article-level) ────────────────────────────────────────
-function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
-  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[];
+function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
+  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; filtros: FiltroUbicacion[];
 }) {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
@@ -163,7 +164,12 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
         id_compania: String(r.id_compania ?? ''), compania: String(r.compania ?? ''),
         tipo_ubicacion: String(r.tipo_ubicacion ?? ''), estado: String(r.estado ?? ''),
       }));
-      setRows(mapped);
+      // Apply active ubicacion filters (exclude rows whose ubicacion matches any active patron)
+      const activeFiltros = filtros.filter(f => f.activo && f.patron.trim());
+      const filteredMapped = activeFiltros.length > 0
+        ? mapped.filter(row => !activeFiltros.some(f => row.ubicacion.toUpperCase().includes(f.patron.toUpperCase())))
+        : mapped;
+      setRows(filteredMapped);
       setColumnas((colsData ?? []) as DistribCol[]);
 
       // Build ubicacion map
@@ -175,7 +181,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
       setUbicRows((ubicData ?? []) as any[]);
 
       // Load volumetria
-      const articulos = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
+      const articulos = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
       if (articulos.length > 0) {
         const { data: volData, error: volErr } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
         if (volErr) console.error('[costos-almacen] volumetría RPC error:', volErr.message);
@@ -194,7 +200,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
       // Load picking match data (Máximos, Mínimos, % Picking from Zona Picking)
       // Match key: Artículo ONLY — company IDs differ between inventario and zona_picking
       // (same rationale as volMap: picking params are intrinsic to the article, not the company)
-      const articulosForPick = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
+      const articulosForPick = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
       if (articulosForPick.length > 0) {
         const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_articulos: articulosForPick });
         if (pickErr) {
@@ -218,7 +224,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
       }
 
       // Load slot stats
-      const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
+      const ubicaciones = [...new Set(filteredMapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicaciones.length > 0) {
         const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones });
         const sMap: Record<string, any> = {};
@@ -241,7 +247,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
       }
       setLoading(false);
     })();
-  }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeZonas.join(','), filtros.filter(f=>f.activo).map(f=>f.patron).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute slot costs (needs systemVarMap)
   const systemVarDefs_sc = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
@@ -580,6 +586,10 @@ export default function CostosAlmacenPage() {
   const [formulaCtx, setFormulaCtx] = useState<FormulaContext>(EMPTY_FORMULA_CTX);
   const [varColValues, setVarColValues] = useState<Record<string,number>>({});
   const [dataTab, setDataTab] = useState<'inventario'|'volumetria'>('inventario');
+  const [filtros, setFiltros] = useState<FiltroUbicacion[]>([]);
+  const [newPatron, setNewPatron] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [savingFiltro, setSavingFiltro] = useState(false);
 
   const [activeSelection, setActiveSelection] = useState<ActiveSelection>({ type: 'zone', zona: '' });
   const [showUbicTable, setShowUbicTable] = useState(false);
@@ -623,13 +633,36 @@ export default function CostosAlmacenPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadData(); loadClusters(); }, [loadData, loadClusters]);
+  useEffect(() => {
+    loadData();
+    loadClusters();
+    supabase.from('costos_almacen_filtros').select('*').order('created_at').then(({ data }) => {
+      setFiltros((data ?? []) as FiltroUbicacion[]);
+    });
+  }, [loadData, loadClusters]);
   useEffect(() => {
     if(activeSelection.type==='zone'&&!activeSelection.zona&&zonaResumen.length>0){
       const first=zonaResumen.find(z=>!clusters.some(c=>c.zonas.includes(z.zona)));
       if(first)setActiveSelection({type:'zone',zona:first.zona});
     }
   }, [zonaResumen, clusters]); // eslint-disable-line
+
+  const saveNewFiltro = async () => {
+    if (!newPatron.trim()) return;
+    setSavingFiltro(true);
+    const { data, error } = await supabase.from('costos_almacen_filtros').insert({ patron: newPatron.trim(), descripcion: newDesc.trim(), activo: true }).select().maybeSingle();
+    if (!error && data) { setFiltros(prev => [...prev, data as FiltroUbicacion]); setNewPatron(''); setNewDesc(''); }
+    setSavingFiltro(false);
+  };
+  const toggleFiltro = async (id: string, activo: boolean) => {
+    await supabase.from('costos_almacen_filtros').update({ activo }).eq('id', id);
+    setFiltros(prev => prev.map(f => f.id === id ? { ...f, activo } : f));
+  };
+  const deleteFiltro = async (id: string) => {
+    if (!confirm('¿Eliminar esta regla?')) return;
+    await supabase.from('costos_almacen_filtros').delete().eq('id', id);
+    setFiltros(prev => prev.filter(f => f.id !== id));
+  };
 
   const handleClearAll = async () => {
     if (!confirm('¿Eliminar TODOS los datos de inventario de Costos Almacén?')) return;
@@ -671,9 +704,10 @@ export default function CostosAlmacenPage() {
           ) : (
             <div className="px-6 py-4">
               <div className="flex gap-1 mb-4 flex-wrap">
-                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Almacenaje'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
-                  <button key={t.id} onClick={()=>setTab(t.id as Tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${tab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Almacenaje'},{id:'datos',icon:'ri-table-line',label:'Ver datos'},{id:'reglas',icon:'ri-filter-3-line',label:'Reglas de filtrado'}].map(t=>(
+                  <button key={t.id} onClick={()=>setTab(t.id as Tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${tab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'} ${t.id==='reglas'&&filtros.some(f=>f.activo)?'ring-1 ring-amber-400':''}`}>
                     <i className={`${t.icon} text-[11px]`}/>{t.label}
+                    {t.id==='reglas'&&filtros.some(f=>f.activo)&&<span className="ml-1 px-1.5 py-0.5 bg-amber-400 text-white rounded-full text-[9px] font-bold">{filtros.filter(f=>f.activo).length}</span>}
                   </button>
                 ))}
               </div>
@@ -718,7 +752,65 @@ export default function CostosAlmacenPage() {
                       formulaCtx={formulaCtx}
                       extraVars={varColValues}
                       activeZonas={activeZonas}
+                      filtros={filtros}
                     />
+                  )}
+                </div>
+              )}
+
+              {/* REGLAS */}
+              {tab==='reglas'&&(
+                <div className="space-y-5 max-w-2xl">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                    <p className="text-sm font-semibold text-amber-800"><i className="ri-filter-3-line mr-1.5"/>Reglas de filtrado de ubicaciones</p>
+                    <p className="text-xs text-amber-600 mt-1">
+                      Las filas cuya <strong>Ubicación</strong> contenga cualquier patrón activo quedan <strong>excluidas</strong> de todos los cálculos, sumas y fórmulas del módulo.<br/>
+                      Ejemplo: patrón <code className="bg-amber-100 px-1 rounded">-N01-</code> excluye ubicaciones tipo <code className="bg-amber-100 px-1 rounded">RCL33-C024-N01-1</code>
+                    </p>
+                  </div>
+
+                  {/* Add rule form */}
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+                    <p className="text-xs font-semibold text-slate-700">Agregar nueva regla</p>
+                    <div className="flex gap-3 flex-wrap">
+                      <div className="flex-1 min-w-[160px]">
+                        <label className="text-[11px] text-slate-500 mb-1 block">Patrón (contenido en Ubicación)</label>
+                        <input type="text" value={newPatron} onChange={e=>setNewPatron(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newPatron.trim())saveNewFiltro();}} placeholder="ej: -N01-  ó  N02  ó  MERMA" className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-amber-400 bg-white font-mono"/>
+                      </div>
+                      <div className="flex-1 min-w-[180px]">
+                        <label className="text-[11px] text-slate-500 mb-1 block">Descripción (opcional)</label>
+                        <input type="text" value={newDesc} onChange={e=>setNewDesc(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newPatron.trim())saveNewFiltro();}} placeholder="ej: Excluir nivel 1" className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-amber-400 bg-white"/>
+                      </div>
+                    </div>
+                    <button onClick={saveNewFiltro} disabled={!newPatron.trim()||savingFiltro} className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap">
+                      <i className="ri-add-line"/>{savingFiltro?'Guardando...':'Agregar regla'}
+                    </button>
+                  </div>
+
+                  {/* Rules list */}
+                  {filtros.length === 0 ? (
+                    <p className="text-center text-slate-400 text-sm py-6">Sin reglas definidas. Todas las ubicaciones se incluyen en los cálculos.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {filtros.map(f=>(
+                        <div key={f.id} className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all ${f.activo?'bg-amber-50 border-amber-200':'bg-slate-50 border-slate-200 opacity-60'}`}>
+                          <button onClick={()=>toggleFiltro(f.id,!f.activo)} className={`w-10 h-5 rounded-full flex-shrink-0 transition-all cursor-pointer relative ${f.activo?'bg-amber-400':'bg-slate-300'}`}>
+                            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${f.activo?'left-5':'left-0.5'}`}/>
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono text-sm font-semibold text-slate-800">{f.patron}</span>
+                            {f.descripcion&&<span className="ml-2 text-xs text-slate-400">{f.descripcion}</span>}
+                            {f.activo&&<span className="ml-2 text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">activo</span>}
+                          </div>
+                          <button onClick={()=>deleteFiltro(f.id)} className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50 cursor-pointer flex-shrink-0"><i className="ri-delete-bin-line text-sm"/></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {filtros.some(f=>f.activo)&&(
+                    <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      <i className="ri-information-line mr-1"/>Los cambios se aplican al recargar la pestaña <strong>Por Zona Almacenaje</strong>.
+                    </p>
                   )}
                 </div>
               )}
