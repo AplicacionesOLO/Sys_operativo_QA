@@ -178,8 +178,15 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       const articulos = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
       if (articulos.length > 0) {
         const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        // Key: id_articulo only — volumen is an intrinsic property of the article,
+        // not company-specific. The inventario and volumetría may be from different companies.
         const vm: Record<string, number> = {};
-        for (const v of (volData ?? []) as any[]) vm[`${v.id_articulo}|${v.id_compania}`] = Number(v.volumen) || 0;
+        for (const v of (volData ?? []) as any[]) {
+          const art = String(v.id_articulo ?? '');
+          const vol = Number(v.volumen) || 0;
+          // Keep the highest volume if multiple rows per article
+          if (!vm[art] || vol > vm[art]) vm[art] = vol;
+        }
         setVolMap(vm);
       }
 
@@ -271,7 +278,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
     return {
       CANTIDAD_UNIDADES: row.cantidad_unidades,
       CANTIDAD_ALMACENAJE: row.cantidad_almacenaje,
-      VOLUMEN: volMap[`${row.articulo}|${row.id_compania}`] ?? 0,
+      VOLUMEN: volMap[row.articulo] ?? 0,
       TOTAL_ARTICULOS: ubic.total_articulos,
       SUMA_CANTIDAD_UBIC: ubic.suma_cantidad,
       ZONA_TOTAL_ARTS: totalArtsZona,
@@ -333,7 +340,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       if(sortKey==='FIXED:ubicacion')return a.ubicacion.localeCompare(b.ubicacion)*dir;
       if(sortKey==='FIXED:cantidad_unidades')return(a.cantidad_unidades-b.cantidad_unidades)*dir;
       if(sortKey==='FIXED:cantidad_almacenaje')return(a.cantidad_almacenaje-b.cantidad_almacenaje)*dir;
-      if(sortKey==='FIXED:volumen')return((volMap[`${a.articulo}|${a.id_compania}`]??0)-(volMap[`${b.articulo}|${b.id_compania}`]??0))*dir;
+      if(sortKey==='FIXED:volumen')return((volMap[a.articulo]??0)-(volMap[b.articulo]??0))*dir;
       if(sortKey.startsWith('SLOT:')){const id=sortKey.slice(5);return((slotCostos[a.ubicacion]?.[id]??0)-(slotCostos[b.ubicacion]?.[id]??0))*dir;}
       if(sortKey.startsWith('PICK:')){const pk=sortKey.slice(5) as keyof PickingMatch;return((pickingMatchMap[rk(a)]?.[pk]??0)-(pickingMatchMap[rk(b)]?.[pk]??0))*dir;}
       const matchedCol=columnas.find(c=>c.id===sortKey);
@@ -377,7 +384,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5"><p className="text-xs text-teal-600">Artículos</p><p className="text-base font-bold text-teal-700">{fmt(rows.length)}</p></div>
         <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Unidades</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.cantidad_unidades,0))}</p></div>
-        <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5"><p className="text-xs text-cyan-600">Σ Volumen</p><p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[`${r.articulo}|${r.id_compania}`]??0),0))}</p></div>
+        <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5"><p className="text-xs text-cyan-600">Σ Volumen</p><p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</p></div>
         <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Ubicaciones</p><p className="text-base font-bold text-slate-700">{new Set(rows.map(r=>r.ubicacion)).size}</p></div>
       </div>
 
@@ -434,7 +441,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
               {paged.length===0?<tr><td colSpan={colOrder.length+1} className="px-3 py-10 text-center text-slate-400">{search?'Sin resultados':'Sin datos'}</td></tr>
               :paged.map((row,ai)=>{
                 const rk=`${row.articulo}|${row.ubicacion}|${row.id_compania}`;
-                const vol=volMap[`${row.articulo}|${row.id_compania}`]??0;
+                const vol=volMap[row.articulo]??0;
                 return(
                   <tr key={rk+ai} className={`border-t border-slate-100 hover:bg-teal-50/40 ${ai%2===0?'bg-white':'bg-slate-50/30'}`}>
                     <td className="px-3 py-1.5 font-medium text-teal-700 border-r border-slate-100">{row.articulo||'—'}</td>
@@ -464,7 +471,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
               <td colSpan={2} className="px-3 py-2 border-r border-slate-100"/>
               <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_unidades,0))}</span></td>
               <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_almacenaje,0))}</span></td>
-              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtDec(filteredRows.reduce((s,r)=>s+(volMap[`${r.articulo}|${r.id_compania}`]??0),0))}</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtDec(filteredRows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</span></td>
               <td colSpan={3} className="px-3 py-2 border-r border-slate-100"/>
               {slotCostoCols.map(col=>{const t=filteredRows.reduce((s,r)=>s+(slotCostos[r.ubicacion]?.[col.id]??0),0);return<td key={`sf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100 bg-emerald-50/40"><span className="text-xs font-bold text-emerald-700">{fmtDec(t)}</span></td>;})}
               <td className="px-3 py-2 text-right border-r border-slate-100 bg-indigo-50/30"><span className="text-[10px] text-indigo-300 italic">máx.</span></td>
