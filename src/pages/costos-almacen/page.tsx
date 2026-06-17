@@ -201,9 +201,9 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     }
 
     (async () => {
-      const [invData, ubicData, { data: colsData }] = await Promise.all([
+      // Only fetch detail rows + columns — ubicaciones are derived from rows (no separate RPC)
+      const [invData, { data: colsData }] = await Promise.all([
         fetchAllPages(rpc, {}, expectedRows),
-        fetchAllPages(rpcUbic, {}, expectedRows),
         supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
 
@@ -214,7 +214,6 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
         id_compania: String(r.id_compania ?? ''), compania: String(r.compania ?? ''),
         tipo_ubicacion: String(r.tipo_ubicacion ?? ''), estado: String(r.estado ?? ''),
       }));
-      // Apply active ubicacion filters (exclude rows whose ubicacion matches any active patron)
       const activeFiltros = filtros.filter(f => f.activo && f.patron.trim());
       const filteredMapped = activeFiltros.length > 0
         ? mapped.filter(row => !activeFiltros.some(f => row.ubicacion.toUpperCase().includes(f.patron.toUpperCase())))
@@ -222,18 +221,24 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       setRows(filteredMapped);
       setColumnas((colsData ?? []) as DistribCol[]);
 
-      // Apply filter rules to ubicaciones table too
-      const filtUbicRows = activeFiltros.length > 0
-        ? ((ubicData ?? []) as any[]).filter((r:any) => !activeFiltros.some(f => String(r.ubicacion??'').toUpperCase().includes(f.patron.toUpperCase())))
-        : (ubicData ?? []) as any[];
-      setUbicRows(filtUbicRows);
-
-      // Build ubicacion map from filtered ubicaciones
+      // Build ubicMap + ubicRows directly from filteredMapped (no extra RPC needed)
+      const ubMapAcc: Record<string, {total:number;suma:number;suma_alm:number;comps:Set<string>}> = {};
+      for (const r of filteredMapped) {
+        const k = r.ubicacion;
+        if (!ubMapAcc[k]) ubMapAcc[k] = {total:0,suma:0,suma_alm:0,comps:new Set()};
+        ubMapAcc[k].total++;
+        ubMapAcc[k].suma += r.cantidad_unidades;
+        ubMapAcc[k].suma_alm += r.cantidad_almacenaje;
+        ubMapAcc[k].comps.add(r.compania);
+      }
       const ubMap: Record<string, UbicData> = {};
-      for (const r of filtUbicRows) {
-        ubMap[String(r.ubicacion ?? '')] = { total_articulos: Number(r.total_articulos)||0, suma_cantidad: Number(r.suma_cantidad)||0, suma_cantidad_alm: Number(r.suma_cantidad_alm)||0, companias: String(r.companias??'') };
+      const ubRowsArr: any[] = [];
+      for (const [ubic, v] of Object.entries(ubMapAcc)) {
+        ubMap[ubic] = { total_articulos: v.total, suma_cantidad: v.suma, suma_cantidad_alm: v.suma_alm, companias: [...v.comps].join(', ') };
+        ubRowsArr.push({ ubicacion: ubic, total_articulos: v.total, suma_cantidad: v.suma, suma_cantidad_alm: v.suma_alm, companias: [...v.comps].join(', ') });
       }
       setUbicMap(ubMap);
+      setUbicRows(ubRowsArr);
 
       // Build artUbicMap + aggRows: aggregate filtered rows by article
       const aMap: Record<string, {ubicSet: Set<string>; suma: number; aggRow: AggRow}> = {};
