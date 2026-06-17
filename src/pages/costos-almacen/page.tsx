@@ -31,6 +31,7 @@ type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; clust
 
 const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
 const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+const fmtVol = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(n);
 
 // Formula tokens for this module
 const ALMACEN_TOKENS = [
@@ -430,7 +431,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
               <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Unidades</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.cantidad_unidades,0))}</p></div>
               <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5">
                 <p className="text-xs text-cyan-600">Σ Volumen <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${pctVol>=80?'bg-green-100 text-green-700':pctVol>=50?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'}`}>{artsConVol}/{uniqArts.size} arts.</span></p>
-                <p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</p>
+                <p className="text-base font-bold text-cyan-700">{fmtVol(rows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</p>
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
                 <p className="text-xs text-slate-500">Picking (Máx/Mín) <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${pctPick>=80?'bg-green-100 text-green-700':pctPick>=50?'bg-amber-100 text-amber-700':'bg-rose-100 text-rose-700'}`}>{artsConPick}/{uniqArts.size} arts.</span></p>
@@ -508,7 +509,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
                     <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis">{row.zona_almacenaje||'—'}</td>
                     <td className="px-3 py-1.5 text-right font-medium text-slate-700 border-r border-slate-100">{fmt(row.cantidad_unidades)}</td>
                     <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{fmt(row.cantidad_almacenaje)}</td>
-                    <td className="px-3 py-1.5 text-right border-r border-slate-100"><span className={`font-medium ${vol>0?'text-cyan-700':'text-slate-300'}`}>{vol>0?fmtDec(vol):'—'}</span></td>
+                    <td className="px-3 py-1.5 text-right border-r border-slate-100"><span className={`font-medium ${vol>0?'text-cyan-700':'text-slate-300'}`}>{vol>0?fmtVol(vol):'—'}</span></td>
                     <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{row.compania||'—'}</td>
                     <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100">{row.tipo_ubicacion||'—'}</td>
                     <td className="px-3 py-1.5 border-r border-slate-100">{row.estado?<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">{row.estado}</span>:'—'}</td>
@@ -529,7 +530,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
               <td colSpan={2} className="px-3 py-2 border-r border-slate-100"/>
               <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_unidades,0))}</span></td>
               <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_almacenaje,0))}</span></td>
-              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtDec(filteredRows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtVol(filteredRows.reduce((s,r)=>s+(volMap[r.articulo]??0),0))}</span></td>
               <td colSpan={3} className="px-3 py-2 border-r border-slate-100"/>
               {slotCostoCols.map(col=>{const t=filteredRows.reduce((s,r)=>s+(slotCostos[r.ubicacion]?.[col.id]??0),0);return<td key={`sf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100 bg-emerald-50/40"><span className="text-xs font-bold text-emerald-700">{fmtDec(t)}</span></td>;})}
               <td className="px-3 py-2 text-right border-r border-slate-100 bg-indigo-50/30"><span className="text-[10px] text-indigo-300 italic">máx.</span></td>
