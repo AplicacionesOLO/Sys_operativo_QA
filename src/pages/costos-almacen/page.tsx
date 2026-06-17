@@ -23,6 +23,7 @@ interface InvRow { articulo: string; ubicacion: string; descripcion: string; zon
 interface UbicData { total_articulos: number; suma_cantidad: number; suma_cantidad_alm: number; companias: string; }
 interface DistribCol { id: string; nombre: string; formula?: string; orden: number; }
 interface MasivoInfo { totalRegistros: number; headers: string[]; volRecords: number; }
+interface PickingMatch { cant_maxima: number; cant_minima: number; pct_picking: number; }
 type Tab = 'resumen' | 'zonas' | 'datos';
 type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
 
@@ -40,6 +41,9 @@ const ALMACEN_TOKENS = [
   { token: '{SLOT_TOTAL}',          label: 'Slots totales',              desc: 'Total de slots físicos en esta Ubicación (Costos de Slots)' },
   { token: '{SLOT_LIBRES}',         label: 'Slots libres',               desc: 'Slots con estado Libre' },
   { token: '{SLOT_PCT_LIBRES}',     label: '% Slots libres',             desc: '% de slots libres en esta Ubicación' },
+  { token: '{CANT_MAXIMA}',         label: 'Cantidad Máxima (Picking)',  desc: 'Cantidad Máxima del artículo en esta ubicación (Zona Picking)' },
+  { token: '{CANT_MINIMA}',         label: 'Cantidad Mínima (Picking)',  desc: 'Cantidad Mínima del artículo en esta ubicación (Zona Picking)' },
+  { token: '{PCT_PICKING}',         label: '% Picking',                  desc: '% de picking de este artículo en esta ubicación (Zona Picking)' },
 ];
 
 // ── Sortable headers ──────────────────────────────────────────────────────────
@@ -114,6 +118,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
   const [slotCostos, setSlotCostos] = useState<Record<string, Record<string, number>>>({});
   const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string;tipo:string}[]>([]);
   const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
+  const [pickingMatchMap, setPickingMatchMap] = useState<Record<string, PickingMatch>>({});
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<string>('zona_almacenaje');
@@ -177,6 +182,21 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
         setVolMap(vm);
       }
 
+      // Load picking match data (Máximos, Mínimos, % Picking from Zona Picking)
+      const ubicacionesForPick = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
+      if (ubicacionesForPick.length > 0) {
+        const { data: pickData } = await supabase.rpc('fn_picking_match_for_almacen', { p_ubicaciones: ubicacionesForPick });
+        const pm: Record<string, PickingMatch> = {};
+        for (const p of (pickData ?? []) as any[]) {
+          pm[`${String(p.id_articulo??'')}|${String(p.ubicacion??'')}|${String(p.id_compania??'')}`] = {
+            cant_maxima: Number(p.cant_maxima) || 0,
+            cant_minima: Number(p.cant_minima) || 0,
+            pct_picking: Number(p.pct_picking) || 0,
+          };
+        }
+        setPickingMatchMap(pm);
+      }
+
       // Load slot stats
       const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicaciones.length > 0) {
@@ -237,6 +257,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
   const buildRowVarMap = useCallback((row: InvRow) => {
     const ubic = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cantidad:0, suma_cantidad_alm:0, companias:'' };
     const slot = slotStats[row.ubicacion];
+    const pick = pickingMatchMap[`${row.articulo}|${row.ubicacion}|${row.id_compania}`] ?? { cant_maxima:0, cant_minima:0, pct_picking:0 };
     const slotCostVars: Record<string, number> = {};
     for (const col of slotCostoCols) { slotCostVars[col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase()] = slotCostos[row.ubicacion]?.[`name:${col.nombre}`] ?? 0; }
     return {
@@ -247,11 +268,14 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       SUMA_CANTIDAD_UBIC: ubic.suma_cantidad,
       ZONA_TOTAL_ARTS: totalArtsZona,
       SLOT_TOTAL: slot?.total ?? 0, SLOT_LIBRES: slot?.libres ?? 0, SLOT_PCT_LIBRES: slot?.pct_libres ?? 0,
+      CANT_MAXIMA: pick.cant_maxima,
+      CANT_MINIMA: pick.cant_minima,
+      PCT_PICKING: pick.pct_picking,
       ...slotCostVars,
       ...extraVars,
       ...systemVarMap,
     };
-  }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, extraVars, systemVarMap]);
+  }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, pickingMatchMap, extraVars, systemVarMap]);
 
   // Computed formula cells
   const computedCols = useMemo(() => {
@@ -302,11 +326,12 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       if(sortKey==='FIXED:cantidad_almacenaje')return(a.cantidad_almacenaje-b.cantidad_almacenaje)*dir;
       if(sortKey==='FIXED:volumen')return((volMap[`${a.articulo}|${a.id_compania}`]??0)-(volMap[`${b.articulo}|${b.id_compania}`]??0))*dir;
       if(sortKey.startsWith('SLOT:')){const id=sortKey.slice(5);return((slotCostos[a.ubicacion]?.[id]??0)-(slotCostos[b.ubicacion]?.[id]??0))*dir;}
+      if(sortKey.startsWith('PICK:')){const pk=sortKey.slice(5) as keyof PickingMatch;return((pickingMatchMap[rk(a)]?.[pk]??0)-(pickingMatchMap[rk(b)]?.[pk]??0))*dir;}
       const matchedCol=columnas.find(c=>c.id===sortKey);
       if(matchedCol){return((computedCols[sortKey]?.[rk(a)]?.value??0)-(computedCols[sortKey]?.[rk(b)]?.value??0))*dir;}
       return(String((a as any)[sortKey]??'')<String((b as any)[sortKey]??'')?-1:String((a as any)[sortKey]??'')>String((b as any)[sortKey]??'')?1:0)*dir;
     });
-  },[filteredRows,sortKey,sortDir,volMap,slotCostos,columnas,computedCols]);
+  },[filteredRows,sortKey,sortDir,volMap,slotCostos,pickingMatchMap,columnas,computedCols]);
 
   const totalPages = Math.ceil(sortedRows.length / PAGE);
   const paged = sortedRows.slice(page * PAGE, (page + 1) * PAGE);
@@ -388,6 +413,9 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
                     </SFH>
                   ))}
                   {slotCostoCols.map(col=><th key={col.id} onClick={()=>toggleSort(`SLOT:${col.id}`)} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-emerald-100 bg-emerald-50 text-emerald-700" title={col.formula}><i className="ri-stack-line text-[10px] mr-1"/>{col.nombre} <i className={`ml-0.5 ${si(`SLOT:${col.id}`)}`}/></th>)}
+                  <th onClick={()=>toggleSort('PICK:cant_maxima')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700"><i className="ri-arrow-up-line text-[10px] mr-1"/>Cant. Máx. <i className={`ml-0.5 ${si('PICK:cant_maxima')}`}/></th>
+                  <th onClick={()=>toggleSort('PICK:cant_minima')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700"><i className="ri-arrow-down-line text-[10px] mr-1"/>Cant. Mín. <i className={`ml-0.5 ${si('PICK:cant_minima')}`}/></th>
+                  <th onClick={()=>toggleSort('PICK:pct_picking')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700">% Picking <i className={`ml-0.5 ${si('PICK:pct_picking')}`}/></th>
                   {columnas.map(col=><SCH key={col.id} col={col} onDelete={deleteCol} onEditFormula={(c,e)=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(x=>x.id===c.id);setEditingFormula({id:c.id,colIdx:ci,formula:c.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} onRename={async(id,n)=>{await supabase.from('costos_almacen_inv_distribucion_columnas').update({nombre:n}).eq('id',id);setColumnas(prev=>prev.map(c=>c.id===id?{...c,nombre:n}:c));}} onSort={()=>toggleSort(col.id)} sortIconClass={si(col.id)}/>)}
                 </SortableContext>
                 <th className="px-1 py-2.5 bg-slate-50">{addingCol?<div className="flex items-center gap-1 px-1"><input type="text" value={newColName} onChange={e=>setNewColName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCol();if(e.key==='Escape'){setAddingCol(false);setNewColName('');}}} placeholder="Nombre..." className="w-[100px] px-2 py-1 text-xs border border-teal-300 rounded-md focus:outline-none bg-white" autoFocus/><button onClick={addCol} disabled={!newColName.trim()} className="w-6 h-6 flex items-center justify-center rounded-md bg-teal-500 text-white cursor-pointer disabled:opacity-50"><i className="ri-check-line text-xs"/></button><button onClick={()=>{setAddingCol(false);setNewColName('');}} className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 cursor-pointer"><i className="ri-close-line text-xs"/></button></div>:<button onClick={()=>setAddingCol(true)} className="w-8 h-8 flex items-center justify-center rounded-lg border-2 border-dashed border-slate-300 text-slate-400 hover:border-teal-400 hover:text-teal-500 hover:bg-teal-50 cursor-pointer transition-all"><i className="ri-add-line text-sm"/></button>}</th>
@@ -411,6 +439,11 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
                     <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100">{row.tipo_ubicacion||'—'}</td>
                     <td className="px-3 py-1.5 border-r border-slate-100">{row.estado?<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">{row.estado}</span>:'—'}</td>
                     {slotCostoCols.map(col=>{const val=slotCostos[row.ubicacion]?.[col.id];return<td key={`sc_${col.id}`} className="px-3 py-1.5 text-right border-r border-slate-100 bg-emerald-50/30"><span className={val!=null&&val>0?'text-emerald-700 font-bold tabular-nums':'text-slate-200 text-[10px]'}>{val!=null&&val>0?fmtDec(val):'—'}</span></td>;})}
+                    {(() => { const pick=pickingMatchMap[rk]; return (<>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.cant_maxima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_maxima>0?fmt(pick.cant_maxima):'—'}</span></td>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.cant_minima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_minima>0?fmt(pick.cant_minima):'—'}</span></td>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.pct_picking>0?'text-indigo-600 tabular-nums':'text-slate-200 text-[10px]'}>{pick?.pct_picking>0?fmtDec(pick.pct_picking)+'%':'—'}</span></td>
+                    </>); })()}
                     {columnas.map(col=>{const cell=computedCols[col.id]?.[rk];const hasF=!!cell?.formula;return<td key={col.id} onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx:ci,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className={`px-3 py-1.5 text-right border-r border-slate-100 cursor-pointer transition-colors ${hasF?'hover:bg-teal-100/60':'hover:bg-slate-100'}`}>{hasF?(cell?.error?<span className="text-rose-500 text-[10px]">Err</span>:cell?.isGlobal?<span className="text-slate-300 text-[10px] italic">—</span>:cell?.value!=null?<span className="text-teal-700 font-bold tabular-nums">{fmtDec(cell.value!)}</span>:<span className="text-slate-300">—</span>):<span className="text-slate-300 text-[10px]">—</span>}</td>;})}
                     <td className="px-1 py-1.5"/>
                   </tr>
@@ -425,6 +458,9 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
               <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtDec(filteredRows.reduce((s,r)=>s+(volMap[`${r.articulo}|${r.id_compania}`]??0),0))}</span></td>
               <td colSpan={3} className="px-3 py-2 border-r border-slate-100"/>
               {slotCostoCols.map(col=>{const t=filteredRows.reduce((s,r)=>s+(slotCostos[r.ubicacion]?.[col.id]??0),0);return<td key={`sf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100 bg-emerald-50/40"><span className="text-xs font-bold text-emerald-700">{fmtDec(t)}</span></td>;})}
+              <td className="px-3 py-2 text-right border-r border-slate-100 bg-indigo-50/30"><span className="text-[10px] text-indigo-300 italic">máx.</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100 bg-indigo-50/30"><span className="text-[10px] text-indigo-300 italic">mín.</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100 bg-indigo-50/30"><span className="text-[10px] text-indigo-300 italic">%</span></td>
               {columnas.map(col=><td key={`cf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-teal-700">{fmtDec(footerTotals[col.id]??0)}</span></td>)}
               <td className="px-1 py-2"/>
             </tr></tfoot>)}
@@ -456,9 +492,16 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
         const prevCols = editingFormula.colIdx > 0 ? columnas.slice(0, editingFormula.colIdx) : [];
         const prevColTokens = prevCols.map(pc => ({ token: colNameToToken(pc.nombre), label: pc.nombre+' (col. anterior)', value: sRow ? (computedCols[pc.id]?.[sKey]?.value ?? undefined) : undefined }));
         const slotCostTokens = slotCostoCols.map(col => ({ token: col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), label: `${col.nombre} (Costos de Slots)`, value: sRow ? (slotCostos[sRow.ubicacion]?.[`name:${col.nombre}`] ?? 0) : undefined }));
+        const pickRow = sRow ? pickingMatchMap[sKey] : undefined;
+        const pickingTokens = [
+          { token: 'CANT_MAXIMA', label: 'Cantidad Máxima (Picking)', value: pickRow?.cant_maxima ?? 0 },
+          { token: 'CANT_MINIMA', label: 'Cantidad Mínima (Picking)', value: pickRow?.cant_minima ?? 0 },
+          { token: 'PCT_PICKING',  label: '% Picking (Zona Picking)',  value: pickRow?.pct_picking ?? 0 },
+        ];
         const allTokens = [
           ...ALMACEN_TOKENS.map(t => ({ token: t.token.replace(/\{|\}/g,''), label: t.label, value: sRow ? (buildRowVarMap(sRow) as any)[t.token.replace(/\{|\}/g,'')] : undefined })),
           ...slotCostTokens,
+          ...pickingTokens,
           ...prevColTokens,
         ];
         const prevVars = Object.fromEntries(prevCols.map(pc => [colNameToToken(pc.nombre), computedCols[pc.id]?.[sKey]?.value ?? 0]));
