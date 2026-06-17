@@ -268,14 +268,14 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       // Load slot stats
       const ubicaciones = [...new Set(filteredMapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicaciones.length > 0) {
-        const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones });
+        const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones }).range(0, 99999);
         const sMap: Record<string, any> = {};
         for (const s of (sData ?? []) as any[]) sMap[String(s.ubicacion??'')] = { total:Number(s.total)||0, libres:Number(s.libres)||0, bloqueados:Number(s.bloqueados)||0, reservados:Number(s.reservados)||0, pct_libres:Number(s.pct_libres)||0, tipo_ubicacion:String(s.tipo_ubicacion??''), dimension:String(s.dimension??''), zona_almacenaje:String(s.zona_almacenaje??'') };
         setSlotStats(sMap);
 
         const zonasAlm = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
         const [{ data: tdData }, { data: slotCols }] = await Promise.all([
-          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }),
+          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999),
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
         const tdMap: Record<string, any> = {};
