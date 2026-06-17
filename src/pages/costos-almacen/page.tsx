@@ -1,0 +1,667 @@
+import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
+import { supabase } from '@/lib/supabase';
+import AppLayout from '@/components/feature/AppLayout';
+import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
+import type { FormulaContext } from '@/lib/formulaEngine';
+import { EMPTY_FORMULA_CTX, toAllDataSources, calcularFormula } from '@/lib/formulaEngine';
+import type { InversionRecord } from '@/types/inversion';
+import { evalFormula } from '@/lib/mathEvaluator';
+import { buildVariableDefs, buildVariableMap, type VariableDef } from '@/lib/formulaVariables';
+import {
+  DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, horizontalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { useZonaClusters } from '@/hooks/useZonaClusters';
+import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
+import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
+import { logChange } from '@/lib/auditLog';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface ZonaResumen { zona: string; total_articulos: number; ubicaciones_distintas: number; companias_distintas: number; cantidad_total: number; }
+interface InvRow { articulo: string; ubicacion: string; descripcion: string; zona_almacenaje: string; cantidad_unidades: number; cantidad_almacenaje: number; id_compania: string; compania: string; tipo_ubicacion: string; estado: string; }
+interface UbicData { total_articulos: number; suma_cantidad: number; suma_cantidad_alm: number; companias: string; }
+interface DistribCol { id: string; nombre: string; formula?: string; orden: number; }
+interface MasivoInfo { totalRegistros: number; headers: string[]; volRecords: number; }
+type Tab = 'resumen' | 'zonas' | 'datos';
+type ActiveSelection = { type: 'zone'; zona: string } | { type: 'cluster'; cluster: { id: string; nombre: string; zonas: string[]; color: string; orden: number } };
+
+const fmt    = (n: number) => new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(n);
+const fmtDec = (n: number) => new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+// Formula tokens for this module
+const ALMACEN_TOKENS = [
+  { token: '{CANTIDAD_UNIDADES}',   label: 'Cantidad Unidades',          desc: 'Cantidad de unidades de este artículo en la ubicación' },
+  { token: '{CANTIDAD_ALMACENAJE}', label: 'Cantidad Almacenaje',        desc: 'Cantidad de almacenaje del artículo' },
+  { token: '{VOLUMEN}',             label: 'Volumen (Volumetría)',        desc: 'Volumen del artículo (cruzado desde Volumetría por ID_ARTICULO)' },
+  { token: '{TOTAL_ARTICULOS}',     label: 'Artículos en ubicación',     desc: 'Total artículos en la misma Ubicación' },
+  { token: '{SUMA_CANTIDAD_UBIC}',  label: 'Σ Cantidad ubicación',       desc: 'Suma de Cantidad Unidades de todos los artículos de la ubicación' },
+  { token: '{ZONA_TOTAL_ARTS}',     label: 'Total arts. zona',           desc: 'Total de artículos en la zona activa' },
+  { token: '{SLOT_TOTAL}',          label: 'Slots totales',              desc: 'Total de slots físicos en esta Ubicación (Costos de Slots)' },
+  { token: '{SLOT_LIBRES}',         label: 'Slots libres',               desc: 'Slots con estado Libre' },
+  { token: '{SLOT_PCT_LIBRES}',     label: '% Slots libres',             desc: '% de slots libres en esta Ubicación' },
+];
+
+// ── Sortable headers ──────────────────────────────────────────────────────────
+function SFH({ id, className, children }: { id: string; className?: string; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return <th ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' }} className={className}><div className="flex items-center gap-1.5"><button {...attributes} {...listeners} className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200 cursor-grab active:cursor-grabbing flex-shrink-0"><i className="ri-draggable text-xs"/></button><div className="min-w-0 flex-1">{children}</div></div></th>;
+}
+
+function SCH({ col, onDelete, onEditFormula, onRename, onSort, sortIconClass }: { col: DistribCol; onDelete: (id: string) => void; onEditFormula: (col: DistribCol, e: React.MouseEvent) => void; onRename: (id: string, n: string) => void; onSort: () => void; sortIconClass: string }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: col.id });
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(col.nombre);
+  const hasF = !!col.formula?.trim();
+  const save = () => { const t = name.trim(); if (t && t !== col.nombre) onRename(col.id, t); else setName(col.nombre); setEditing(false); };
+  return (
+    <th ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' }} className={`px-2 py-2.5 border-r font-semibold ${hasF ? 'bg-teal-100/60 border-teal-200' : 'bg-teal-50/50 border-teal-100'}`}>
+      <div className="flex items-center gap-1.5">
+        <button {...attributes} {...listeners} className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200 cursor-grab active:cursor-grabbing flex-shrink-0"><i className="ri-draggable text-xs"/></button>
+        <div className="flex items-center gap-1 min-w-0 flex-1">
+          {editing ? <input type="text" value={name} onChange={e=>setName(e.target.value)} onBlur={save} onKeyDown={e=>{if(e.key==='Enter')save();if(e.key==='Escape'){setName(col.nombre);setEditing(false);}}} className="text-xs text-teal-700 bg-white border border-teal-300 rounded px-1.5 py-0.5 w-full min-w-[80px] focus:outline-none" autoFocus/>
+          : <div className="flex items-center gap-0.5 min-w-0 group/n"><span onClick={onSort} className="text-xs text-teal-700 whitespace-nowrap max-w-[120px] overflow-hidden text-ellipsis cursor-pointer hover:underline">{col.nombre}</span><div className="w-3 h-3 flex items-center justify-center flex-shrink-0 cursor-pointer" onClick={onSort}><i className={sortIconClass}/></div><button onClick={()=>{setName(col.nombre);setEditing(true);}} className="w-4 h-4 flex items-center justify-center rounded text-slate-300 hover:text-teal-500 cursor-pointer flex-shrink-0 opacity-0 group-hover/n:opacity-100"><i className="ri-pencil-line text-[10px]"/></button></div>}
+          {hasF && <span className="text-[10px] px-1 py-0.5 rounded bg-teal-200 text-teal-700 font-mono font-bold flex-shrink-0">fx</span>}
+        </div>
+        <button onClick={e=>onEditFormula(col,e)} className={`w-5 h-5 flex items-center justify-center rounded cursor-pointer flex-shrink-0 ${hasF?'text-teal-600 hover:text-teal-800 hover:bg-teal-200':'text-slate-400 hover:text-teal-500 hover:bg-teal-100'}`}><i className={`${hasF?'ri-pencil-line':'ri-functions'} text-xs`}/></button>
+        <button onClick={()=>onDelete(col.id)} className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50 cursor-pointer flex-shrink-0"><i className="ri-close-line text-xs"/></button>
+      </div>
+    </th>
+  );
+}
+
+// ── Raw Table viewer ──────────────────────────────────────────────────────────
+function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [page, setPage] = useState(0);
+  const [count, setCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const TABLE = tab === 'inventario' ? 'costos_almacen_inventario_raw' : 'costos_almacen_volumetria_raw';
+  const PAGE = 50;
+  const load = useCallback(async (p: number) => {
+    setLoading(true);
+    const { data, count: c } = await supabase.from(TABLE).select('id, raw_data', { count: 'exact' }).order('created_at', { ascending: false }).range(p * PAGE, (p + 1) * PAGE - 1);
+    if (data) { setRows(data as any); setCount(c ?? 0); }
+    setLoading(false);
+  }, [TABLE]);
+  useEffect(() => { load(0); setPage(0); }, [load]);
+  useEffect(() => { load(page); }, [load, page]);
+  const totalPages = Math.ceil(count / PAGE);
+  const dh = rows[0]?.raw_data ? Object.keys(rows[0].raw_data).slice(0, 20) : [];
+  return (
+    <div className="space-y-3">
+      <span className="text-xs text-slate-400">{fmt(count)} registros · pág. {page+1}/{Math.max(totalPages,1)}</span>
+      <div className="border border-slate-200 rounded-lg overflow-auto max-h-[55vh]">
+        <table className="text-xs whitespace-nowrap w-full">
+          <thead><tr className="bg-slate-50 sticky top-0 z-10"><th className="px-3 py-2 text-left text-slate-500 border-r border-slate-200">#</th>{dh.map(h=><th key={h} className="px-3 py-2 text-left text-slate-500 border-r border-slate-200 max-w-[140px] overflow-hidden text-ellipsis">{h}</th>)}</tr></thead>
+          <tbody>{loading?<tr><td colSpan={dh.length+1} className="px-3 py-8 text-center text-slate-400">Cargando...</td></tr>:rows.map((r,i)=><tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50"><td className="px-3 py-1.5 text-slate-400 border-r border-slate-100 text-center">{page*PAGE+i+1}</td>{dh.map(h=>{const v=r.raw_data?.[h];return<td key={h} className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[140px] overflow-hidden text-ellipsis">{v!=null?String(v):'—'}</td>;})}</tr>)}</tbody>
+        </table>
+      </div>
+      {totalPages>1&&<div className="flex items-center justify-between gap-3"><button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer"><i className="ri-arrow-left-line mr-1"/>Anterior</button><span className="text-xs text-slate-400">{page+1}/{totalPages}</span><button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer">Siguiente<i className="ri-arrow-right-line ml-1"/></button></div>}
+    </div>
+  );
+}
+
+// ── Distribution table (article-level) ────────────────────────────────────────
+function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
+  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; colZoneKey: string;
+}) {
+  const [rows, setRows] = useState<InvRow[]>([]);
+  const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
+  const [volMap, setVolMap] = useState<Record<string, number>>({});  // articulo|compania → volume
+  const [slotStats, setSlotStats] = useState<Record<string, any>>({});
+  const [slotCostoCols, setSlotCostoCols] = useState<{id:string;nombre:string;formula:string}[]>([]);
+  const [slotCostos, setSlotCostos] = useState<Record<string, Record<string, number>>>({});
+  const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string;tipo:string}[]>([]);
+  const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<string>('zona_almacenaje');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('asc');
+  const [page, setPage] = useState(0);
+  const [columnas, setColumnas] = useState<DistribCol[]>([]);
+  const [addingCol, setAddingCol] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [editingFormula, setEditingFormula] = useState<{id:string;colIdx:number;formula:string;position:{top:number;left:number}}|null>(null);
+  const [showUbicTable, setShowUbicTable] = useState(false);
+  const [ubicRows, setUbicRows] = useState<any[]>([]);
+  const PAGE = 200;
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  // Load distribution columns for this zone
+  useEffect(() => {
+    supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', colZoneKey).order('orden').then(({ data }) => {
+      setColumnas((data ?? []) as DistribCol[]);
+    });
+  }, [colZoneKey]);
+
+  // Load rows + cross-reference data
+  useEffect(() => {
+    if (!activeZonas.length) { setRows([]); setUbicMap({}); return; }
+    setLoading(true);
+    const rpc = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_detalle' : 'fn_almacen_inv_zona_detalle';
+    const params = activeZonas.length > 1 ? { p_zonas: activeZonas, p_offset: 0, p_limit: 9999 } : { p_zona: activeZonas[0], p_offset: 0, p_limit: 9999 };
+    const rpcUbic = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_ubicaciones' : 'fn_almacen_inv_zona_ubicaciones';
+
+    (async () => {
+      const [{ data: invData }, { data: ubicData }, { data: colsData }] = await Promise.all([
+        supabase.rpc(rpc, params),
+        supabase.rpc(rpcUbic, { ...params, p_offset: 0, p_limit: 5000 }),
+        supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', colZoneKey).order('orden'),
+      ]);
+
+      const mapped: InvRow[] = ((invData ?? []) as any[]).map((r: any) => ({
+        articulo: String(r.articulo ?? ''), ubicacion: String(r.ubicacion ?? ''),
+        descripcion: String(r.descripcion ?? ''), zona_almacenaje: String(r.zona_almacenaje ?? ''),
+        cantidad_unidades: Number(r.cantidad_unidades) || 0, cantidad_almacenaje: Number(r.cantidad_almacenaje) || 0,
+        id_compania: String(r.id_compania ?? ''), compania: String(r.compania ?? ''),
+        tipo_ubicacion: String(r.tipo_ubicacion ?? ''), estado: String(r.estado ?? ''),
+      }));
+      setRows(mapped);
+      setColumnas((colsData ?? []) as DistribCol[]);
+
+      // Build ubicacion map
+      const ubMap: Record<string, UbicData> = {};
+      for (const r of (ubicData ?? []) as any[]) {
+        ubMap[String(r.ubicacion ?? '')] = { total_articulos: Number(r.total_articulos)||0, suma_cantidad: Number(r.suma_cantidad)||0, suma_cantidad_alm: Number(r.suma_cantidad_alm)||0, companias: String(r.companias??'') };
+      }
+      setUbicMap(ubMap);
+      setUbicRows((ubicData ?? []) as any[]);
+
+      // Load volumetria
+      const articulos = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
+      if (articulos.length > 0) {
+        const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        const vm: Record<string, number> = {};
+        for (const v of (volData ?? []) as any[]) vm[`${v.id_articulo}|${v.id_compania}`] = Number(v.volumen) || 0;
+        setVolMap(vm);
+      }
+
+      // Load slot stats
+      const ubicaciones = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
+      if (ubicaciones.length > 0) {
+        const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones });
+        const sMap: Record<string, any> = {};
+        for (const s of (sData ?? []) as any[]) sMap[String(s.ubicacion??'')] = { total:Number(s.total)||0, libres:Number(s.libres)||0, bloqueados:Number(s.bloqueados)||0, reservados:Number(s.reservados)||0, pct_libres:Number(s.pct_libres)||0, tipo_ubicacion:String(s.tipo_ubicacion??''), dimension:String(s.dimension??''), zona_almacenaje:String(s.zona_almacenaje??'') };
+        setSlotStats(sMap);
+
+        const zonasAlm = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
+        const [{ data: tdData }, { data: slotCols }] = await Promise.all([
+          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }),
+          supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
+        ]);
+        const tdMap: Record<string, any> = {};
+        for (const td of (tdData ?? []) as any[]) { const k=`${td.zona_almacenaje}|${td.tipo_ubicacion}|${td.dimension}`; tdMap[k]={total:Number(td.total)||0,libres:Number(td.libres)||0,bloqueados:Number(td.bloqueados)||0,reservados:Number(td.reservados)||0,otros:Number(td.otros)||0,zona_total:Number(td.zona_total)||0,pct_zona:Number(td.pct_zona)||0,pct_libres:Number(td.pct_libres)||0}; }
+        setSlotTdMap(tdMap);
+        const rawCols = ((slotCols ?? []) as any[]).filter((c:any)=>c.formula?.trim()).map((c:any)=>({id:String(c.id),nombre:String(c.nombre),formula:String(c.formula),zona:String(c.zona??''),tipo:String(c.tipo??'')}));
+        setSlotRawCols(rawCols);
+        const seen2 = new Set<string>(); const uniqueCols: any[] = [];
+        for (const c of rawCols) { if(!seen2.has(c.nombre)){seen2.add(c.nombre);uniqueCols.push({id:`name:${c.nombre}`,nombre:c.nombre,formula:c.formula});} }
+        setSlotCostoCols(uniqueCols);
+      }
+      setLoading(false);
+    })();
+  }, [activeZonas.join(','), colZoneKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Compute slot costs (needs systemVarMap)
+  const systemVarDefs_sc = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
+  const systemVarMap_sc  = useMemo(():Record<string,number>=>{if(!systemVarDefs_sc.length)return{};try{return buildVariableMap(systemVarDefs_sc,toAllDataSources(formulaCtx));}catch{return {};}},[ formulaCtx,systemVarDefs_sc]);
+
+  useEffect(() => {
+    if (!Object.keys(slotStats).length || !slotRawCols.length || !Object.keys(slotTdMap).length) return;
+    const zonaMatchFn = (colZ: string, ubZ: string) => colZ === ubZ || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
+    const cosMap: Record<string, Record<string, number>> = {};
+    for (const [ubic, st] of Object.entries(slotStats)) {
+      const td = slotTdMap[`${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`];
+      if (!td) continue;
+      const vm = { TOTAL:td.total,LIBRES:td.libres,BLOQUEADOS:td.bloqueados,RESERVADOS:td.reservados,OTROS:td.otros,ZONA_TOTAL:td.zona_total,PCT_ZONA:td.pct_zona,PCT_LIBRES:td.pct_libres,...systemVarMap_sc };
+      cosMap[ubic] = {};
+      const seen3 = new Set<string>();
+      for (const col of slotRawCols) {
+        if (seen3.has(col.nombre)) continue;
+        const best = slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion && zonaMatchFn(c.zona, st.zona_almacenaje));
+        if (!best) continue;
+        const ev = evalFormula(best.formula, vm);
+        cosMap[ubic][`name:${col.nombre}`] = ev.ok ? ev.value : 0;
+        seen3.add(col.nombre);
+      }
+    }
+    setSlotCostos(cosMap);
+  }, [slotStats, slotRawCols, slotTdMap, systemVarMap_sc]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const systemVarDefs = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
+  const systemVarMap  = useMemo(():Record<string,number>=>{if(!systemVarDefs.length)return{};try{return buildVariableMap(systemVarDefs,toAllDataSources(formulaCtx));}catch{return {};}},[ formulaCtx,systemVarDefs]);
+  const colNameToToken = useCallback((n: string) => n.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), []);
+  const totalArtsZona = rows.length;
+
+  const buildRowVarMap = useCallback((row: InvRow) => {
+    const ubic = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cantidad:0, suma_cantidad_alm:0, companias:'' };
+    const slot = slotStats[row.ubicacion];
+    const slotCostVars: Record<string, number> = {};
+    for (const col of slotCostoCols) { slotCostVars[col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase()] = slotCostos[row.ubicacion]?.[`name:${col.nombre}`] ?? 0; }
+    return {
+      CANTIDAD_UNIDADES: row.cantidad_unidades,
+      CANTIDAD_ALMACENAJE: row.cantidad_almacenaje,
+      VOLUMEN: volMap[`${row.articulo}|${row.id_compania}`] ?? 0,
+      TOTAL_ARTICULOS: ubic.total_articulos,
+      SUMA_CANTIDAD_UBIC: ubic.suma_cantidad,
+      ZONA_TOTAL_ARTS: totalArtsZona,
+      SLOT_TOTAL: slot?.total ?? 0, SLOT_LIBRES: slot?.libres ?? 0, SLOT_PCT_LIBRES: slot?.pct_libres ?? 0,
+      ...slotCostVars,
+      ...extraVars,
+      ...systemVarMap,
+    };
+  }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, extraVars, systemVarMap]);
+
+  // Computed formula cells
+  const computedCols = useMemo(() => {
+    const result: Record<string, Record<string, {value:number|null;error:boolean;isGlobal:boolean}>> = {};
+    const rowKey = (r: InvRow) => `${r.articulo}|${r.ubicacion}|${r.id_compania}`;
+    const accum: Record<string, Record<string, number>> = {};
+    for (const r of rows) accum[rowKey(r)] = {};
+    for (const col of columnas) {
+      result[col.id] = {};
+      const colT = colNameToToken(col.nombre);
+      const f = col.formula?.trim();
+      if (!f) { for (const r of rows) { accum[rowKey(r)][colT]=0; result[col.id][rowKey(r)]={value:null,error:false,isGlobal:false}; } continue; }
+      const hasRowV = /\{(CANTIDAD_UNIDADES|CANTIDAD_ALMACENAJE|VOLUMEN|TOTAL_ARTICULOS|SUMA_CANTIDAD_UBIC|ZONA_TOTAL_ARTS|SLOT_TOTAL|SLOT_LIBRES|SLOT_PCT_LIBRES)\}/i.test(f);
+      if (!hasRowV) {
+        const rv = evalFormula(f, {...systemVarMap}); const val = rv.ok ? rv.value : null;
+        for (const r of rows) { accum[rowKey(r)][colT]=val??0; result[col.id][rowKey(r)]={value:val,error:!rv.ok,isGlobal:true}; }
+      } else {
+        for (const r of rows) {
+          const k=rowKey(r); const vm={...buildRowVarMap(r),...accum[k]}; const ev=evalFormula(f,vm); const val=ev.ok?ev.value:null;
+          accum[k][colT]=val??0; result[col.id][k]={value:val,error:!ev.ok,isGlobal:false};
+        }
+      }
+    }
+    return result;
+  }, [columnas, rows, buildRowVarMap, systemVarMap, colNameToToken]);
+
+  const colOrder = useMemo(() => {
+    const d = ['FIXED:articulo','FIXED:ubicacion','FIXED:descripcion','FIXED:zona','FIXED:cantidad_unidades','FIXED:cantidad_almacenaje','FIXED:volumen','FIXED:compania','FIXED:tipo_ubicacion','FIXED:estado',...columnas.map(c=>c.id)];
+    return d;
+  }, [columnas]);
+
+  const footerTotals = useMemo(() => { const t: Record<string,number>={}; const rk=(r:InvRow)=>`${r.articulo}|${r.ubicacion}|${r.id_compania}`; for(const c of columnas) t[c.id]=rows.reduce((s,r)=>{const cv=computedCols[c.id]?.[rk(r)];return s+(!cv?.isGlobal&&cv?.value!=null?cv.value:0);},0); return t; },[columnas,computedCols,rows]);
+
+  const deferredSearch = useDeferredValue(search);
+  const filteredRows = useMemo(() => {
+    if(!deferredSearch) return rows;
+    const q=deferredSearch.toLowerCase();
+    return rows.filter(r=>r.articulo.toLowerCase().includes(q)||r.descripcion.toLowerCase().includes(q)||r.ubicacion.toLowerCase().includes(q)||r.compania.toLowerCase().includes(q));
+  },[rows,deferredSearch]);
+
+  const sortedRows = useMemo(() => {
+    const rk=(r:InvRow)=>`${r.articulo}|${r.ubicacion}|${r.id_compania}`;
+    return [...filteredRows].sort((a,b)=>{
+      const dir=sortDir==='asc'?1:-1;
+      if(sortKey==='FIXED:articulo')return a.articulo.localeCompare(b.articulo)*dir;
+      if(sortKey==='FIXED:ubicacion')return a.ubicacion.localeCompare(b.ubicacion)*dir;
+      if(sortKey==='FIXED:cantidad_unidades')return(a.cantidad_unidades-b.cantidad_unidades)*dir;
+      if(sortKey==='FIXED:cantidad_almacenaje')return(a.cantidad_almacenaje-b.cantidad_almacenaje)*dir;
+      if(sortKey==='FIXED:volumen')return((volMap[`${a.articulo}|${a.id_compania}`]??0)-(volMap[`${b.articulo}|${b.id_compania}`]??0))*dir;
+      if(sortKey.startsWith('SLOT:')){const id=sortKey.slice(5);return((slotCostos[a.ubicacion]?.[id]??0)-(slotCostos[b.ubicacion]?.[id]??0))*dir;}
+      const matchedCol=columnas.find(c=>c.id===sortKey);
+      if(matchedCol){return((computedCols[sortKey]?.[rk(a)]?.value??0)-(computedCols[sortKey]?.[rk(b)]?.value??0))*dir;}
+      return(String((a as any)[sortKey]??'')<String((b as any)[sortKey]??'')?-1:String((a as any)[sortKey]??'')>String((b as any)[sortKey]??'')?1:0)*dir;
+    });
+  },[filteredRows,sortKey,sortDir,volMap,slotCostos,columnas,computedCols]);
+
+  const totalPages = Math.ceil(sortedRows.length / PAGE);
+  const paged = sortedRows.slice(page * PAGE, (page + 1) * PAGE);
+  const toggleSort = (k: string) => { if(sortKey===k)setSortDir(d=>d==='asc'?'desc':'asc');else{setSortKey(k);setSortDir(columnas.some(c=>c.id===k)?'desc':'asc');}setPage(0); };
+  const si = (k: string) => sortKey!==k?'ri-expand-up-down-line text-slate-300':sortDir==='asc'?'ri-sort-asc text-slate-700':'ri-sort-desc text-slate-700';
+
+  const addCol = async () => {
+    if(!newColName.trim())return;
+    const{data,error}=await supabase.from('costos_almacen_inv_distribucion_columnas').insert({nombre:newColName.trim(),orden:columnas.length,zona:colZoneKey}).select().maybeSingle();
+    if(error){alert(`Error: ${error.message}`);return;}
+    if(data)setColumnas(prev=>[...prev,data as DistribCol]);
+    setNewColName('');setAddingCol(false);
+  };
+  const deleteCol = async (id:string) => {
+    if(!confirm('¿Eliminar?'))return;
+    await supabase.from('costos_almacen_inv_distribucion_columnas').delete().eq('id',id);
+    setColumnas(prev=>prev.filter(c=>c.id!==id));
+  };
+  const saveFormula = async (formula:string) => {
+    if(!editingFormula)return;
+    const col=columnas.find(c=>c.id===editingFormula.id);
+    await supabase.from('costos_almacen_inv_distribucion_columnas').update({formula:formula||null}).eq('id',editingFormula.id);
+    logChange({modulo:'costos-almacen',accion:'update_formula',entidad_tipo:'costos_almacen_inv_distribucion_columnas',entidad_id:editingFormula.id,entidad_label:col?.nombre,campo:'formula',valor_antes:col?.formula??null,valor_despues:formula||null});
+    setColumnas(prev=>prev.map(c=>c.id===editingFormula.id?{...c,formula:formula||undefined}:c));
+    setEditingFormula(null);
+  };
+  const handleDragEnd = useCallback((event:DragEndEvent)=>{const{active,over}=event;if(!over||active.id===over.id)return;const cur=colOrder;const oi=cur.indexOf(String(active.id));const ni=cur.indexOf(String(over.id));if(oi===-1||ni===-1)return;},[colOrder]);
+
+  if(loading)return<div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"/></div>;
+
+  return(
+    <div className="space-y-3">
+      {/* Stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-teal-50 border border-teal-100 rounded-lg px-3 py-2.5"><p className="text-xs text-teal-600">Artículos</p><p className="text-base font-bold text-teal-700">{fmt(rows.length)}</p></div>
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Σ Cant. Unidades</p><p className="text-base font-bold text-slate-700">{fmt(rows.reduce((s,r)=>s+r.cantidad_unidades,0))}</p></div>
+        <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2.5"><p className="text-xs text-cyan-600">Σ Volumen</p><p className="text-base font-bold text-cyan-700">{fmtDec(rows.reduce((s,r)=>s+(volMap[`${r.articulo}|${r.id_compania}`]??0),0))}</p></div>
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5"><p className="text-xs text-slate-500">Ubicaciones</p><p className="text-base font-bold text-slate-700">{new Set(rows.map(r=>r.ubicacion)).size}</p></div>
+      </div>
+
+      {/* Formula columns panel */}
+      <div className="bg-white border border-teal-200 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-teal-100 bg-teal-50 flex items-center justify-between">
+          <div><p className="text-xs font-semibold text-teal-700">Columnas de fórmula por artículo</p><p className="text-[10px] text-teal-400 mt-0.5">{ALMACEN_TOKENS.slice(0,4).map(t=>t.token).join(' · ')}</p></div>
+          {!addingCol && <button onClick={()=>setAddingCol(true)} className="flex items-center gap-1 px-3 py-1.5 bg-teal-500 hover:bg-teal-600 text-white text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-add-line"/>Agregar columna</button>}
+        </div>
+        {addingCol && <div className="px-4 py-3 border-b border-teal-100 bg-teal-50/50 flex items-center gap-3"><input type="text" value={newColName} onChange={e=>setNewColName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCol();if(e.key==='Escape'){setAddingCol(false);setNewColName('');}}} placeholder="Nombre (ej: Costo por artículo)" className="flex-1 px-3 py-1.5 text-sm border border-teal-300 rounded-lg focus:outline-none bg-white" autoFocus/><button onClick={addCol} disabled={!newColName.trim()} className="px-3 py-1.5 bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs rounded-lg cursor-pointer">Crear</button><button onClick={()=>{setAddingCol(false);setNewColName('');}} className="px-3 py-1.5 text-slate-500 hover:bg-slate-100 text-xs rounded-lg cursor-pointer">Cancelar</button></div>}
+        {columnas.length === 0 && !addingCol ? <p className="px-4 py-4 text-center text-slate-400 text-xs">Sin columnas. Agrega una con fórmula.</p> : (
+          <div className="flex flex-wrap gap-2 px-4 py-3">
+            {columnas.map(col=>{const sRow=rows[0];const sKey=sRow?`${sRow.articulo}|${sRow.ubicacion}|${sRow.id_compania}`:'';const sVal=sRow?computedCols[col.id]?.[sKey]?.value:undefined;return(
+              <div key={col.id} className="flex items-center gap-2 bg-white border border-teal-200 rounded-lg px-3 py-2">
+                <span className="text-xs font-medium text-teal-700">{col.nombre}</span>
+                {sVal!=null&&<span className="text-sm font-bold text-slate-800 tabular-nums">{fmtDec(sVal)}</span>}
+                <span className="text-[10px] text-slate-400 italic max-w-[140px] overflow-hidden text-ellipsis whitespace-nowrap">{col.formula?col.formula.slice(0,30)+(col.formula.length>30?'...':''):'sin fórmula'}</span>
+                <button onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const colIdx=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className="w-6 h-6 flex items-center justify-center rounded text-teal-400 hover:text-teal-600 hover:bg-teal-100 cursor-pointer"><i className="ri-functions text-xs"/></button>
+                <button onClick={()=>deleteCol(col.id)} className="w-6 h-6 flex items-center justify-center rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50 cursor-pointer"><i className="ri-delete-bin-line text-xs"/></button>
+              </div>
+            );})}
+          </div>
+        )}
+      </div>
+
+      {/* Search */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 min-w-[200px]"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i className="ri-search-line text-sm text-slate-400"/></div><input type="text" placeholder="Buscar artículo, ubicación, descripción..." value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-teal-100 focus:border-teal-300 outline-none bg-white placeholder:text-slate-400"/></div>
+        <span className="text-xs text-slate-400 whitespace-nowrap">{filteredRows.length.toLocaleString('es-CO')} filas</span>
+      </div>
+
+      {/* Main table */}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <div className="border border-slate-200 rounded-lg overflow-auto max-h-[65vh]">
+          <table className="text-xs whitespace-nowrap w-full">
+            <thead>
+              <tr className="bg-slate-50 sticky top-0 z-10">
+                <SortableContext items={colOrder} strategy={horizontalListSortingStrategy}>
+                  {[{k:'FIXED:articulo',l:'Artículo',s:true},{k:'FIXED:ubicacion',l:'Ubicación',s:true},{k:'FIXED:descripcion',l:'Descripción',s:false},{k:'FIXED:zona',l:'Zona Almacenaje',s:false},{k:'FIXED:cantidad_unidades',l:'Cant. Unid.',s:true},{k:'FIXED:cantidad_almacenaje',l:'Cant. Alm.',s:true},{k:'FIXED:volumen',l:'Volumen',s:true},{k:'FIXED:compania',l:'Compañía',s:false},{k:'FIXED:tipo_ubicacion',l:'Tipo Ubic.',s:false},{k:'FIXED:estado',l:'Estado',s:false}].map(h=>(
+                    <SFH key={h.k} id={h.k} className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200 bg-slate-50">
+                      {h.s?<span onClick={()=>toggleSort(h.k)} className="cursor-pointer hover:text-slate-700 flex items-center gap-1">{h.l}<i className={`${si(h.k)} ml-0.5`}/></span>:<span>{h.l}</span>}
+                    </SFH>
+                  ))}
+                  {slotCostoCols.map(col=><th key={col.id} onClick={()=>toggleSort(`SLOT:${col.id}`)} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-emerald-100 bg-emerald-50 text-emerald-700" title={col.formula}><i className="ri-stack-line text-[10px] mr-1"/>{col.nombre} <i className={`ml-0.5 ${si(`SLOT:${col.id}`)}`}/></th>)}
+                  {columnas.map(col=><SCH key={col.id} col={col} onDelete={deleteCol} onEditFormula={(c,e)=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(x=>x.id===c.id);setEditingFormula({id:c.id,colIdx:ci,formula:c.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} onRename={async(id,n)=>{await supabase.from('costos_almacen_inv_distribucion_columnas').update({nombre:n}).eq('id',id);setColumnas(prev=>prev.map(c=>c.id===id?{...c,nombre:n}:c));}} onSort={()=>toggleSort(col.id)} sortIconClass={si(col.id)}/>)}
+                </SortableContext>
+                <th className="px-1 py-2.5 bg-slate-50">{addingCol?<div className="flex items-center gap-1 px-1"><input type="text" value={newColName} onChange={e=>setNewColName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')addCol();if(e.key==='Escape'){setAddingCol(false);setNewColName('');}}} placeholder="Nombre..." className="w-[100px] px-2 py-1 text-xs border border-teal-300 rounded-md focus:outline-none bg-white" autoFocus/><button onClick={addCol} disabled={!newColName.trim()} className="w-6 h-6 flex items-center justify-center rounded-md bg-teal-500 text-white cursor-pointer disabled:opacity-50"><i className="ri-check-line text-xs"/></button><button onClick={()=>{setAddingCol(false);setNewColName('');}} className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 cursor-pointer"><i className="ri-close-line text-xs"/></button></div>:<button onClick={()=>setAddingCol(true)} className="w-8 h-8 flex items-center justify-center rounded-lg border-2 border-dashed border-slate-300 text-slate-400 hover:border-teal-400 hover:text-teal-500 hover:bg-teal-50 cursor-pointer transition-all"><i className="ri-add-line text-sm"/></button>}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paged.length===0?<tr><td colSpan={colOrder.length+1} className="px-3 py-10 text-center text-slate-400">{search?'Sin resultados':'Sin datos'}</td></tr>
+              :paged.map((row,ai)=>{
+                const rk=`${row.articulo}|${row.ubicacion}|${row.id_compania}`;
+                const vol=volMap[`${row.articulo}|${row.id_compania}`]??0;
+                return(
+                  <tr key={rk+ai} className={`border-t border-slate-100 hover:bg-teal-50/40 ${ai%2===0?'bg-white':'bg-slate-50/30'}`}>
+                    <td className="px-3 py-1.5 font-medium text-teal-700 border-r border-slate-100">{row.articulo||'—'}</td>
+                    <td className="px-3 py-1.5 font-mono text-[11px] text-slate-700 border-r border-slate-100 font-medium">{row.ubicacion||'—'}</td>
+                    <td className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[220px] overflow-hidden text-ellipsis" title={row.descripcion}>{row.descripcion||'—'}</td>
+                    <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis">{row.zona_almacenaje||'—'}</td>
+                    <td className="px-3 py-1.5 text-right font-medium text-slate-700 border-r border-slate-100">{fmt(row.cantidad_unidades)}</td>
+                    <td className="px-3 py-1.5 text-right text-slate-500 border-r border-slate-100">{fmt(row.cantidad_almacenaje)}</td>
+                    <td className="px-3 py-1.5 text-right border-r border-slate-100"><span className={`font-medium ${vol>0?'text-cyan-700':'text-slate-300'}`}>{vol>0?fmtDec(vol):'—'}</span></td>
+                    <td className="px-3 py-1.5 text-slate-500 border-r border-slate-100">{row.compania||'—'}</td>
+                    <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100">{row.tipo_ubicacion||'—'}</td>
+                    <td className="px-3 py-1.5 border-r border-slate-100">{row.estado?<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">{row.estado}</span>:'—'}</td>
+                    {slotCostoCols.map(col=>{const val=slotCostos[row.ubicacion]?.[col.id];return<td key={`sc_${col.id}`} className="px-3 py-1.5 text-right border-r border-slate-100 bg-emerald-50/30"><span className={val!=null&&val>0?'text-emerald-700 font-bold tabular-nums':'text-slate-200 text-[10px]'}>{val!=null&&val>0?fmtDec(val):'—'}</span></td>;})}
+                    {columnas.map(col=>{const cell=computedCols[col.id]?.[rk];const hasF=!!cell?.formula;return<td key={col.id} onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx:ci,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className={`px-3 py-1.5 text-right border-r border-slate-100 cursor-pointer transition-colors ${hasF?'hover:bg-teal-100/60':'hover:bg-slate-100'}`}>{hasF?(cell?.error?<span className="text-rose-500 text-[10px]">Err</span>:cell?.isGlobal?<span className="text-slate-300 text-[10px] italic">—</span>:cell?.value!=null?<span className="text-teal-700 font-bold tabular-nums">{fmtDec(cell.value!)}</span>:<span className="text-slate-300">—</span>):<span className="text-slate-300 text-[10px]">—</span>}</td>;})}
+                    <td className="px-1 py-1.5"/>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {paged.length>0&&(<tfoot><tr className="border-t-2 border-slate-200 bg-slate-100/80">
+              <td className="px-3 py-2 font-semibold text-slate-600 text-xs" colSpan={2}>{filteredRows.length.toLocaleString('es-CO')} artículos</td>
+              <td colSpan={2} className="px-3 py-2 border-r border-slate-100"/>
+              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-700">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_unidades,0))}</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-slate-600">{fmt(filteredRows.reduce((s,r)=>s+r.cantidad_almacenaje,0))}</span></td>
+              <td className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-cyan-700">{fmtDec(filteredRows.reduce((s,r)=>s+(volMap[`${r.articulo}|${r.id_compania}`]??0),0))}</span></td>
+              <td colSpan={3} className="px-3 py-2 border-r border-slate-100"/>
+              {slotCostoCols.map(col=>{const t=filteredRows.reduce((s,r)=>s+(slotCostos[r.ubicacion]?.[col.id]??0),0);return<td key={`sf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100 bg-emerald-50/40"><span className="text-xs font-bold text-emerald-700">{fmtDec(t)}</span></td>;})}
+              {columnas.map(col=><td key={`cf_${col.id}`} className="px-3 py-2 text-right border-r border-slate-100"><span className="text-xs font-bold text-teal-700">{fmtDec(footerTotals[col.id]??0)}</span></td>)}
+              <td className="px-1 py-2"/>
+            </tr></tfoot>)}
+          </table>
+        </div>
+      </DndContext>
+
+      {totalPages>1&&<div className="flex items-center justify-between gap-3 pt-1"><span className="text-xs text-slate-400">{page*PAGE+1}–{Math.min((page+1)*PAGE,sortedRows.length)} de {sortedRows.length}</span><div className="flex items-center gap-1"><button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap"><i className="ri-arrow-left-s-line"/>Anterior</button><button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer whitespace-nowrap">Siguiente<i className="ri-arrow-right-s-line"/></button></div></div>}
+
+      {/* Collapsible ubicacion table */}
+      <div className="mt-3 border-t border-slate-200 pt-3">
+        <button onClick={()=>setShowUbicTable(v=>!v)} className="flex items-center gap-2 px-4 py-2.5 w-full bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-sm font-medium text-slate-600 transition-colors cursor-pointer">
+          <i className={`ri-${showUbicTable?'subtract':'add'}-line text-sm`}/>{showUbicTable?'Ocultar':'Ver'} tabla de ubicaciones por artículo<i className={`ri-arrow-${showUbicTable?'up':'down'}-s-line text-slate-400 ml-auto`}/>
+        </button>
+        {showUbicTable && (
+          <div className="mt-3 border border-slate-200 rounded-lg overflow-auto max-h-[50vh]">
+            <table className="text-xs whitespace-nowrap w-full">
+              <thead><tr className="bg-slate-50 sticky top-0 z-10"><th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Ubicación</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artículos</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Σ Cant.</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Σ Cant. Alm.</th><th className="px-3 py-2.5 text-left text-slate-500 font-semibold">Compañías</th></tr></thead>
+              <tbody>{ubicRows.map((r:any,i:number)=><tr key={r.ubicacion+i} className={`border-t border-slate-100 hover:bg-teal-50/40 ${i%2===0?'bg-white':'bg-slate-50/30'}`}><td className="px-3 py-2 font-mono text-[11px] text-slate-700 border-r border-slate-100 font-medium">{r.ubicacion||'—'}</td><td className="px-3 py-2 text-right font-bold text-teal-700 border-r border-slate-100">{fmt(r.total_articulos)}</td><td className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(r.suma_cantidad)}</td><td className="px-3 py-2 text-right text-slate-500 border-r border-slate-100">{fmt(r.suma_cantidad_alm)}</td><td className="px-3 py-2 text-slate-400 max-w-[200px] overflow-hidden text-ellipsis">{r.companias||'—'}</td></tr>)}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Formula editor */}
+      {editingFormula && (() => {
+        const sRow = rows[0];
+        const sKey = sRow ? `${sRow.articulo}|${sRow.ubicacion}|${sRow.id_compania}` : '';
+        const prevCols = editingFormula.colIdx > 0 ? columnas.slice(0, editingFormula.colIdx) : [];
+        const prevColTokens = prevCols.map(pc => ({ token: colNameToToken(pc.nombre), label: pc.nombre+' (col. anterior)', value: sRow ? (computedCols[pc.id]?.[sKey]?.value ?? undefined) : undefined }));
+        const slotCostTokens = slotCostoCols.map(col => ({ token: col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase(), label: `${col.nombre} (Costos de Slots)`, value: sRow ? (slotCostos[sRow.ubicacion]?.[`name:${col.nombre}`] ?? 0) : undefined }));
+        const allTokens = [
+          ...ALMACEN_TOKENS.map(t => ({ token: t.token.replace(/\{|\}/g,''), label: t.label, value: sRow ? (buildRowVarMap(sRow) as any)[t.token.replace(/\{|\}/g,'')] : undefined })),
+          ...slotCostTokens,
+          ...prevColTokens,
+        ];
+        const prevVars = Object.fromEntries(prevCols.map(pc => [colNameToToken(pc.nombre), computedCols[pc.id]?.[sKey]?.value ?? 0]));
+        const enrichedVarMap = sRow ? { ...buildRowVarMap(sRow), ...prevVars } : systemVarMap;
+        return (
+          <ZonaCeldaFormulaEditor
+            formula={editingFormula.formula}
+            varMap={enrichedVarMap}
+            onSave={saveFormula}
+            onCancel={() => setEditingFormula(null)}
+            position={editingFormula.position}
+            systemVarDefs={systemVarDefs}
+            systemVarMap={systemVarMap}
+            columnTokens={allTokens}
+          />
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+export default function CostosAlmacenPage() {
+  const [masivoInfo, setMasivoInfo] = useState<MasivoInfo | null>(null);
+  const [loading, setLoading]       = useState(true);
+  const [showInvUpload, setShowInvUpload] = useState(false);
+  const [showVolUpload, setShowVolUpload] = useState(false);
+  const [clearing, setClearing]     = useState(false);
+  const [tab, setTab]               = useState<Tab>('resumen');
+  const [zonaResumen, setZonaResumen] = useState<ZonaResumen[]>([]);
+  const [globalTotals, setGlobalTotals] = useState<{total_registros:number;total_zonas:number;total_articulos:number;cantidad_total:number}|null>(null);
+  const [formulaCtx, setFormulaCtx] = useState<FormulaContext>(EMPTY_FORMULA_CTX);
+  const [varColValues, setVarColValues] = useState<Record<string,number>>({});
+  const [dataTab, setDataTab] = useState<'inventario'|'volumetria'>('inventario');
+
+  const [activeSelection, setActiveSelection] = useState<ActiveSelection>({ type: 'zone', zona: '' });
+  const [showUbicTable, setShowUbicTable] = useState(false);
+  const isCluster = activeSelection.type === 'cluster';
+  const activeZona = activeSelection.type === 'zone' ? activeSelection.zona : '';
+  const activeCluster = activeSelection.type === 'cluster' ? activeSelection.cluster : null;
+  const activeZonas = isCluster ? (activeCluster?.zonas ?? []) : (activeZona ? [activeZona] : []);
+  const zonaLabel = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZona;
+  const colZoneKey = useMemo(() => activeZonas.length === 1 ? activeZonas[0] : `_cluster_${[...activeZonas].sort().join('_')}`, [activeZonas.join(',')]); // eslint-disable-line
+
+  const { clusters, loadClusters } = useZonaClusters('costos_almacen_inv_clusters');
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    const { count: invCount } = await supabase.from('costos_almacen_inventario_raw').select('*', { count: 'exact', head: true });
+    const { count: volCount } = await supabase.from('costos_almacen_volumetria_raw').select('*', { count: 'exact', head: true });
+    if (!invCount || invCount === 0) { setMasivoInfo(null); setLoading(false); return; }
+    const { data: sample } = await supabase.from('costos_almacen_inventario_raw').select('raw_data').limit(1).single();
+    setMasivoInfo({ totalRegistros: invCount, headers: sample?.raw_data ? Object.keys(sample.raw_data as Record<string,unknown>) : [], volRecords: volCount ?? 0 });
+
+    const [{ data: totRaw }, { data: zonRaw }, base] = await Promise.all([
+      supabase.rpc('fn_almacen_inv_totales'),
+      supabase.rpc('fn_almacen_inv_zona_resumen'),
+      fetchBaseQueryData(),
+    ]);
+    const t0 = (totRaw as any[])?.[0] ?? {};
+    setGlobalTotals({ total_registros:Number(t0.total_registros)||0, total_zonas:Number(t0.total_zonas)||0, total_articulos:Number(t0.total_articulos)||0, cantidad_total:Number(t0.cantidad_total)||0 });
+    const zonas = ((zonRaw ?? []) as any[]).map((r:any) => ({ zona:String(r.zona??''), total_articulos:Number(r.total_articulos)||0, ubicaciones_distintas:Number(r.ubicaciones_distintas)||0, companias_distintas:Number(r.companias_distintas)||0, cantidad_total:Number(r.cantidad_total)||0 }));
+    setZonaResumen(zonas);
+
+    // Build formulaCtx (same enrichment as other modules)
+    const { areasData,invData,gastosColData,gastosFilData,areaDistribData,moColData,moFilData,volColData,volFilData,empData,volDistData,factoresData } = base as any;
+    const [{ data: cosColData }, { data: cosFilData }] = await Promise.all([supabase.from('costos_columnas').select('*').order('orden'), supabase.from('costos_operacion').select('*').order('orden')]);
+    const areasWithCat = ((areasData??[]) as any[]).map((a:any) => ({ nombre:a.nombre,metros_cuadrados:a.metros_cuadrados??0,metros_cubicos:a.metros_cubicos??0,cantidad_racks:a.cantidad_racks??0,categoria:a.categoria,costo_area:a.costo_area??0,costo_area_formula:a.costo_area_formula }));
+    const catTotals: Record<string,number>={};const catTotalsCubic: Record<string,number>={};let totalM3=0;
+    areasWithCat.forEach((a:any)=>{const c=a.categoria??'Sin categoría';catTotals[c]=(catTotals[c]??0)+(a.metros_cuadrados??0);catTotalsCubic[c]=(catTotalsCubic[c]??0)+(a.metros_cubicos??0);totalM3+=a.metros_cubicos??0;});
+    const enrichedAreaDist = ((areaDistribData??[]) as any[]).map((d:any)=>{ const match=areasWithCat.find((a:any)=>a.nombre===d.area_name);const cat=match?.categoria??'Sin categoría';const m2=match?.metros_cuadrados??0;const m3=match?.metros_cubicos??0;const ct=catTotals[cat]??0;const ctc=catTotalsCubic[cat]??0;return{...d,categoria:cat,category_distribution_percentage:ct>0?+((m2/ct)*100).toFixed(2):0,global_distribution_cubic_percentage:totalM3>0?+((m3/totalM3)*100).toFixed(2):0,category_distribution_cubic_percentage:ctc>0?+((m3/ctc)*100).toFixed(2):0}; });
+    const baseCtx: FormulaContext = { inversiones:(invData as InversionRecord[])??[], gastosColumnas:(gastosColData??[]) as FormulaContext['gastosColumnas'], gastosFilas:(gastosFilData??[]) as FormulaContext['gastosFilas'], areaDistribucion:enrichedAreaDist as FormulaContext['areaDistribucion'], manoObraColumnas:(moColData??[]) as FormulaContext['manoObraColumnas'], manoObraFilas:(moFilData??[]) as FormulaContext['manoObraFilas'], manoObraEmpleados:(empData??[]) as FormulaContext['manoObraEmpleados'], volumenesColumnas:(volColData??[]) as FormulaContext['volumenesColumnas'], volumenesFilas:(volFilData??[]) as FormulaContext['volumenesFilas'], costosColumnas:(cosColData??[]) as FormulaContext['costosColumnas'], costosFilas:(cosFilData??[]) as FormulaContext['costosFilas'], areasData:areasWithCat.map((a:any)=>({nombre:a.nombre,metros_cuadrados:a.metros_cuadrados,cantidad_racks:a.cantidad_racks,metros_cubicos:a.metros_cubicos,costo_area:a.costo_area})), volDistribucion:(volDistData??[]) as FormulaContext['volDistribucion'], factores:(factoresData??[]) as FormulaContext['factores'], masivoArticulos:[],masivoZonas:[],masivoZonaArticulos:[],masivoTotals:undefined };
+    const mappedAreas = areasWithCat.map((a:any) => ({...a}));
+    for (const area of mappedAreas) { if(area.costo_area_formula){try{area.costo_area=calcularFormula(area.costo_area_formula,baseCtx,area.nombre);}catch{}}}
+    setFormulaCtx({ ...baseCtx, areasData:mappedAreas.map((a:any)=>({nombre:a.nombre,metros_cuadrados:a.metros_cuadrados,cantidad_racks:a.cantidad_racks,metros_cubicos:a.metros_cubicos,costo_area:a.costo_area})) });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadData(); loadClusters(); }, [loadData, loadClusters]);
+  useEffect(() => {
+    if(activeSelection.type==='zone'&&!activeSelection.zona&&zonaResumen.length>0){
+      const first=zonaResumen.find(z=>!clusters.some(c=>c.zonas.includes(z.zona)));
+      if(first)setActiveSelection({type:'zone',zona:first.zona});
+    }
+  }, [zonaResumen, clusters]); // eslint-disable-line
+
+  const handleClearAll = async () => {
+    if (!confirm('¿Eliminar TODOS los datos de inventario de Costos Almacén?')) return;
+    setClearing(true);
+    await supabase.from('costos_almacen_inventario_raw').delete().neq('id','00000000-0000-0000-0000-000000000000');
+    setClearing(false); loadData();
+  };
+
+  const clusteredZones = new Set(clusters.flatMap(c => c.zonas));
+  const unclusteredZones = zonaResumen.filter(z => !clusteredZones.has(z.zona));
+  const allZoneNames = zonaResumen.map(z => z.zona);
+  const ZONE_COLORS = ['bg-teal-500','bg-cyan-500','bg-emerald-500','bg-sky-500','bg-indigo-500','bg-violet-500','bg-amber-500','bg-rose-500'];
+
+  if (loading) return <AppLayout title="Costos Almacén" subtitle="Cargando..."><div className="flex items-center justify-center py-32"><div className="w-10 h-10 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"/></div></AppLayout>;
+
+  return (
+    <AppLayout
+      title="Costos Almacén"
+      subtitle="Inventario × Volumetría · Zona Almacenaje · Fórmulas por artículo"
+      actions={<div className="flex items-center gap-2">
+        {masivoInfo && <button onClick={handleClearAll} disabled={clearing} className="flex items-center gap-2 px-3 py-2 border border-rose-200 text-rose-600 hover:bg-rose-50 text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap disabled:opacity-50"><i className="ri-delete-bin-line"/>{clearing?'Limpiando...':'Limpiar inventario'}</button>}
+        <button onClick={()=>setShowVolUpload(true)} className="flex items-center gap-2 px-3 py-2 border border-cyan-300 text-cyan-700 hover:bg-cyan-50 text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-cube-line"/>Cargar Volumetría</button>
+        <button onClick={()=>setShowInvUpload(true)} className="flex items-center gap-2 px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-file-excel-2-line"/>Cargar Inventario</button>
+      </div>}
+    >
+      <div className="space-y-6">
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-3">
+            <div><h3 className="text-sm font-semibold text-slate-800">Costos Almacén — Inventario</h3><p className="text-xs text-slate-400 mt-0.5">Zona: <strong>Zona Almacenaje</strong> · Volumen cruzado desde Volumetría por ID_ARTICULO · Costos de Slots por Ubicación</p></div>
+            {masivoInfo && <div className="flex items-center gap-3"><span className="text-xs px-2.5 py-1 rounded-full bg-teal-50 text-teal-700 font-medium">{fmt(masivoInfo.totalRegistros)} artículos</span><span className="text-xs px-2.5 py-1 rounded-full bg-cyan-50 text-cyan-700 font-medium">{fmt(masivoInfo.volRecords)} volumetrías</span></div>}
+          </div>
+
+          {!masivoInfo ? (
+            <div className="px-6 py-12 flex flex-col items-center gap-4">
+              <div className="w-14 h-14 flex items-center justify-center rounded-full bg-teal-50"><i className="ri-archive-drawer-line text-2xl text-teal-400"/></div>
+              <div className="text-center max-w-sm"><p className="text-slate-700 font-semibold text-sm">Sin datos de inventario</p><p className="text-slate-400 text-xs mt-1">Carga el Excel de Inventario para comenzar.</p></div>
+              <div className="flex gap-3"><button onClick={()=>setShowInvUpload(true)} className="flex items-center gap-2 px-4 py-2 bg-teal-500 hover:bg-teal-600 text-white text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-file-excel-2-line"/>Cargar Inventario</button><button onClick={()=>setShowVolUpload(true)} className="flex items-center gap-2 px-4 py-2 border border-cyan-300 text-cyan-700 hover:bg-cyan-50 text-sm font-medium rounded-lg cursor-pointer whitespace-nowrap"><i className="ri-cube-line"/>Cargar Volumetría</button></div>
+            </div>
+          ) : (
+            <div className="px-6 py-4">
+              <div className="flex gap-1 mb-4 flex-wrap">
+                {[{id:'resumen',icon:'ri-dashboard-line',label:'Resumen'},{id:'zonas',icon:'ri-map-pin-line',label:'Por Zona Almacenaje'},{id:'datos',icon:'ri-table-line',label:'Ver datos'}].map(t=>(
+                  <button key={t.id} onClick={()=>setTab(t.id as Tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${tab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    <i className={`${t.icon} text-[11px]`}/>{t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* RESUMEN */}
+              {tab==='resumen'&&globalTotals&&(
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-teal-50 border border-teal-100 rounded-lg px-4 py-3"><p className="text-xs text-teal-600">Total Artículos</p><p className="text-lg font-bold text-teal-700">{fmt(globalTotals.total_registros)}</p></div>
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3"><p className="text-xs text-slate-500">Zonas Almacenaje</p><p className="text-lg font-bold text-slate-700">{globalTotals.total_zonas}</p></div>
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3"><p className="text-xs text-indigo-600">Artículos únicos</p><p className="text-lg font-bold text-indigo-700">{fmt(globalTotals.total_articulos)}</p></div>
+                    <div className="bg-cyan-50 border border-cyan-100 rounded-lg px-4 py-3"><p className="text-xs text-cyan-600">Σ Cant. Unidades</p><p className="text-lg font-bold text-cyan-700">{fmt(globalTotals.cantidad_total)}</p></div>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-5">
+                    <p className="text-sm font-semibold text-slate-700 mb-3">Artículos por Zona Almacenaje</p>
+                    <div className="space-y-2">{zonaResumen.map((z,i)=>{const pct=globalTotals.total_registros>0?(z.total_articulos/globalTotals.total_registros)*100:0;return<div key={z.zona} className="flex items-center gap-3"><div className={`w-2 h-2 rounded-full flex-shrink-0 ${ZONE_COLORS[i%ZONE_COLORS.length]}`}/><span className="w-36 text-xs text-slate-600 font-medium truncate flex-shrink-0" title={z.zona}>{z.zona}</span><div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-teal-400 rounded-full" style={{width:`${Math.max(pct,0.5)}%`}}/></div><span className="w-20 text-right text-xs text-slate-700 font-medium flex-shrink-0">{fmt(z.total_articulos)} arts.</span><span className="w-12 text-right text-xs text-slate-400 flex-shrink-0">{pct.toFixed(1)}%</span></div>;})}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ZONAS */}
+              {tab==='zonas'&&(
+                <div className="space-y-4">
+                  <div className="flex gap-1.5 flex-wrap">
+                    {clusters.map(cluster=>{const isActive=activeSelection.type==='cluster'&&activeSelection.cluster.id===cluster.id;const total=zonaResumen.filter(z=>cluster.zonas.includes(z.zona)).reduce((s,z)=>s+z.total_articulos,0);return<button key={cluster.id} onClick={()=>{setActiveSelection({type:'cluster',cluster});setShowUbicTable(false);;}} className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${isActive?`${clusterActiveBg(cluster.color)} border-transparent`:'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}><i className={`ri-stack-line ${isActive?'text-white/80':'text-slate-400'}`}/>{cluster.nombre}<span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${isActive?'bg-white/20 text-white':'bg-slate-100 text-slate-500'}`}>{fmt(total)}</span></button>;})}
+                    {clusters.length>0&&unclusteredZones.length>0&&<div className="flex items-center px-1"><div className="h-5 w-px bg-slate-200"/></div>}
+                    {unclusteredZones.map((z,i)=>{const isActive=activeSelection.type==='zone'&&activeSelection.zona===z.zona;return<button key={z.zona} onClick={()=>{setActiveSelection({type:'zone',zona:z.zona});setShowUbicTable(false);}} className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${isActive?'bg-teal-600 text-white border-transparent shadow-sm':'bg-white text-slate-600 border-slate-200 hover:border-teal-300 hover:bg-teal-50'}`}><span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive?'bg-white/70':ZONE_COLORS[i%ZONE_COLORS.length]}`}/>{z.zona}<span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${isActive?'bg-white/20 text-white':'bg-slate-100 text-slate-500'}`}>{fmt(z.total_articulos)}</span></button>;})}
+                  </div>
+
+                  {/* Cluster manager */}
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-slate-400">Tabla de artículos por zona · todas las variables del sistema disponibles en fórmulas</p>
+                    <button onClick={()=>setShowUbicTable(v=>!v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+                      <i className="ri-settings-2-line text-sm"/>Clusters {clusters.length>0&&<span className="ml-1 px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+                    </button>
+                  </div>
+                  {showUbicTable && <ZonaClusterManager tableName="costos_almacen_inv_clusters" clusters={clusters} zonas={allZoneNames} onChanged={loadClusters}/>}
+
+                  {activeZonas.length > 0 && (
+                    <TablaDistribucion
+                      formulaCtx={formulaCtx}
+                      extraVars={varColValues}
+                      activeZonas={activeZonas}
+                      colZoneKey={colZoneKey}
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* DATOS */}
+              {tab==='datos'&&(
+                <div className="space-y-3">
+                  <div className="flex gap-1">
+                    {[{id:'inventario',label:'Inventario'},{id:'volumetria',label:'Volumetría'}].map(t=><button key={t.id} onClick={()=>setDataTab(t.id as any)} className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer ${dataTab===t.id?'bg-slate-800 text-white':'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{t.label}</button>)}
+                  </div>
+                  <RawTable tab={dataTab}/>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showInvUpload && (
+        <React.Suspense fallback={null}>
+          {React.createElement(React.lazy(()=>import('./components/InventarioUploadModal')), { onClose:()=>setShowInvUpload(false), onSuccess:loadData })}
+        </React.Suspense>
+      )}
+      {showVolUpload && (
+        <React.Suspense fallback={null}>
+          {React.createElement(React.lazy(()=>import('./components/VolumetriaUploadModal')), { onClose:()=>setShowVolUpload(false), onSuccess:loadData })}
+        </React.Suspense>
+      )}
+    </AppLayout>
+  );
+}

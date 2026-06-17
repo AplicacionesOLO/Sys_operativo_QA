@@ -22,6 +22,7 @@ import BitacoraPage from '@/pages/bitacora/page';
 import CostosMovimientosPage from '@/pages/costos-movimientos/page';
 import ConteoSlotsPage from '@/pages/conteo-slots/page';
 import CostoZonaPickingPage from '@/pages/zona-picking/page';
+import CostosAlmacenPage from '@/pages/costos-almacen/page';
 import ProtectedRoute from '@/components/feature/ProtectedRoute';
 
 const routes: RouteObject[] = [
@@ -46,6 +47,7 @@ const routes: RouteObject[] = [
   { path: '/costos-movimientos', element: <ProtectedRoute moduleKey="costos"><CostosMovimientosPage /></ProtectedRoute> },
   { path: '/conteo-slots', element: <ProtectedRoute moduleKey="costos"><ConteoSlotsPage /></ProtectedRoute> },
   { path: '/zona-picking', element: <ProtectedRoute moduleKey="costos"><CostoZonaPickingPage /></ProtectedRoute> },
+  { path: '/costos-almacen', element: <ProtectedRoute moduleKey="costos"><CostosAlmacenPage /></ProtectedRoute> },
   { path: '/bitacora', element: <ProtectedRoute><BitacoraPage /></ProtectedRoute> },
   { path: '*', element: <NotFound /> },
 ];

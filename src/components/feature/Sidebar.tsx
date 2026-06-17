@@ -16,6 +16,7 @@ const MODULE_PATHS: Record<string, string> = {
   'conteo-slots': '/conteo-slots',
   'zona-picking': '/zona-picking',
   almacen: '/almacen',
+  'costos-almacen': '/costos-almacen',
   cotizaciones: '/cotizaciones',
   'mano-obra': '/mano-obra',
   'gastos-varios': '/gastos-varios',
@@ -33,7 +34,7 @@ const COSTOS_GROUP = [
   { key: 'costos-movimientos', label: 'Costos Movimientos',  icon: 'ri-truck-line' },
   { key: 'conteo-slots',       label: 'Costos de Slots',     icon: 'ri-layout-grid-line' },
   { key: 'zona-picking',       label: 'Costo Zona Picking',  icon: 'ri-map-pin-line' },
-  { key: 'almacen',            label: 'Costos Almacén',      icon: 'ri-store-2-line' },
+  { key: 'costos-almacen',     label: 'Costos Almacén',      icon: 'ri-store-2-line' },
 ];
 
 const COSTOS_PATHS = COSTOS_GROUP.map(i => MODULE_PATHS[i.key]);
