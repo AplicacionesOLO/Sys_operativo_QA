@@ -161,41 +161,32 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     const baseParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
     // Helper: fetch ALL rows bypassing PostgREST max_rows=1000.
-    // Uses parallel requests (PARALLEL batches at once) when expectedRows is known,
-    // otherwise falls back to sequential. CHUNK=500 < max_rows=1000.
+    // CHUNK=500 < max_rows(1000) → PostgREST never truncates → chunk.length<CHUNK = end of data.
+    // PARALLEL=3: 3 concurrent requests — fast (~5-15s) without saturating Supabase connections.
     async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}, totalRows = 0): Promise<any[]> {
       const CHUNK = 500;
-      const PARALLEL = 20; // concurrent requests per batch
+      const PARALLEL = 3;
 
-      const total = totalRows > 0 ? totalRows : 0;
-      if (total > 0) {
-        // FAST PATH: known total → compute all offsets → parallel batches
-        const offsets: number[] = [];
-        for (let o = 0; o < total; o += CHUNK) offsets.push(o);
-        let all: any[] = [];
-        for (let i = 0; i < offsets.length; i += PARALLEL) {
-          const batch = offsets.slice(i, i + PARALLEL);
-          const results = await Promise.all(
-            batch.map(offset =>
-              supabase.rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK })
-                .then(r => (r.data ?? []) as any[])
-            )
-          );
-          all = [...all, ...results.flat()];
-        }
-        return all;
-      }
-      // FALLBACK: unknown total → sequential with safety cap
-      const MAX_PAGES = 300;
+      // Build offsets list: if totalRows known use it, else cap at safety max
+      const maxOffset = totalRows > 0 ? totalRows : 150000;
+      const offsets: number[] = [];
+      for (let o = 0; o < maxOffset; o += CHUNK) offsets.push(o);
+
       let all: any[] = [];
-      let offset = 0;
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const { data: chunk } = await supabase
-          .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK });
-        if (!chunk || chunk.length === 0) break;
-        all = [...all, ...chunk];
-        if (chunk.length < CHUNK) break;
-        offset += CHUNK;
+      for (let i = 0; i < offsets.length; i += PARALLEL) {
+        const batch = offsets.slice(i, i + PARALLEL);
+        const results = await Promise.all(
+          batch.map(async (offset) => {
+            const { data, error } = await supabase
+              .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK });
+            if (error) { console.warn(`[fetchAllPages] offset ${offset} error:`, error.message); return []; }
+            return (data ?? []) as any[];
+          })
+        );
+        const chunks = results.flat();
+        all = [...all, ...chunks];
+        // Stop if any chunk in this batch was smaller than CHUNK (end of data reached)
+        if (results.some(r => r.length < CHUNK)) break;
       }
       return all;
     }
