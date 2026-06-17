@@ -162,8 +162,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
 
     (async () => {
       const [{ data: invData }, { data: ubicData }, { data: colsData }] = await Promise.all([
-        supabase.rpc(rpc, params),
-        supabase.rpc(rpcUbic, { ...params, p_offset: 0, p_limit: 99999 }),
+        supabase.rpc(rpc, params).range(0, 199999),
+        supabase.rpc(rpcUbic, { ...params, p_offset: 0, p_limit: 99999 }).range(0, 99999),
         supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
 
@@ -222,7 +222,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       // Load volumetria
       const articulos = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
       if (articulos.length > 0) {
-        const { data: volData, error: volErr } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        const { data: volData, error: volErr } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos }).range(0, 99999);
         if (volErr) console.error('[costos-almacen] volumetría RPC error:', volErr.message);
         // Key: id_articulo only. Average across all rows (different companies) for same article.
         // The RPC already averages within each (article, company) group via AVG().
@@ -244,7 +244,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       // (same rationale as volMap: picking params are intrinsic to the article, not the company)
       const articulosForPick = [...new Set(filteredMapped.map(r => r.articulo).filter(Boolean))];
       if (articulosForPick.length > 0) {
-        const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_articulos: articulosForPick });
+        const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_articulos: articulosForPick }).range(0, 99999);
         if (pickErr) {
           setPickingRpcOk(false);
         } else {

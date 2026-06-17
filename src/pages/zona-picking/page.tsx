@@ -604,11 +604,11 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     setLoading(true);
     const rpc = activeZonas.length > 1 ? 'fn_picking_zonas_detalle' : 'fn_picking_zona_detalle';
     const params = activeZonas.length > 1
-      ? { p_zonas: activeZonas, p_offset: 0, p_limit: 9999 }
-      : { p_zona: activeZonas[0], p_offset: 0, p_limit: 9999 };
+      ? { p_zonas: activeZonas, p_offset: 0, p_limit: 99999 }
+      : { p_zona: activeZonas[0], p_offset: 0, p_limit: 99999 };
     (async () => {
     const [{data: rpcData}, {data: cols}] = await Promise.all([
-      supabase.rpc(rpc, params),
+      supabase.rpc(rpc, params).range(0, 99999),
       supabase.from('zona_picking_distribucion_columnas').select('*').eq('zona', distColZoneKey).order('orden'),
     ]);
     {
@@ -641,7 +641,7 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       // Load volumetría cross-reference by Id Artículo
       const articulos = [...new Set(mapped.map(r => r.id_articulo).filter(Boolean))];
       if (articulos.length > 0) {
-        const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos }).range(0, 99999);
         // Average across all rows for the same article (RPC already averages within article+company)
         const vmAcc: Record<string, {sum: number; count: number}> = {};
         for (const v of (volData ?? []) as any[]) {
