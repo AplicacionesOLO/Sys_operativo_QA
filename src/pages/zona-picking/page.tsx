@@ -606,10 +606,11 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     const baseZonaParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
     async function fetchAllPickingPages(): Promise<any[]> {
-      const CHUNK = 1000;
+      const CHUNK = 500;
+      const MAX_PAGES = 300;
       let all: any[] = [];
       let offset = 0;
-      while (true) {
+      for (let page = 0; page < MAX_PAGES; page++) {
         const { data: chunk } = await supabase.rpc(rpc, { ...baseZonaParams, p_offset: offset, p_limit: CHUNK });
         if (!chunk || chunk.length === 0) break;
         all = [...all, ...chunk];

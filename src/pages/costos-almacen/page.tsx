@@ -161,18 +161,21 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     const baseParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
     // Helper: paginate RPC calls to bypass PostgREST max_rows cap.
-    // CHUNK must be LESS than max_rows (≈1800 for this project).
-    // With CHUNK=1000: PostgREST never truncates, loop exits only on empty page.
+    // CHUNK must be LESS than max_rows (Supabase default = 1000).
+    // CHUNK=500 guarantees PostgREST never truncates (500 < 1000), so
+    // chunk.length < CHUNK reliably signals end-of-data.
+    // Safety cap: MAX_PAGES*500 = 150,000 rows max.
     async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}): Promise<any[]> {
-      const CHUNK = 1000;
+      const CHUNK = 500;
+      const MAX_PAGES = 300; // safety: prevents infinite loop
       let all: any[] = [];
       let offset = 0;
-      while (true) {
+      for (let page = 0; page < MAX_PAGES; page++) {
         const { data: chunk } = await supabase
           .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK });
         if (!chunk || chunk.length === 0) break;
         all = [...all, ...chunk];
-        if (chunk.length < CHUNK) break; // Fewer rows than requested = end of data
+        if (chunk.length < CHUNK) break; // End of data
         offset += CHUNK;
       }
       return all;
