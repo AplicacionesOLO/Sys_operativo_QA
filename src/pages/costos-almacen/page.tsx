@@ -174,7 +174,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       // Load volumetria
       const articulos = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
       if (articulos.length > 0) {
-        const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        const { data: volData, error: volErr } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
+        if (volErr) console.error('[costos-almacen] volumetría RPC error:', volErr.message);
         // Key: id_articulo only — volumen is an intrinsic property of the article,
         // not company-specific. The inventario and volumetría may be from different companies.
         const vm: Record<string, number> = {};
