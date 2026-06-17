@@ -776,6 +776,7 @@ export default function CostosAlmacenPage() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
+    try {
     const { count: invCount } = await supabase.from('costos_almacen_inventario_raw').select('*', { count: 'exact', head: true });
     const { count: volCount } = await supabase.from('costos_almacen_volumetria_raw').select('*', { count: 'exact', head: true });
     if (!invCount || invCount === 0) { setMasivoInfo(null); setLoading(false); return; }
@@ -803,7 +804,11 @@ export default function CostosAlmacenPage() {
     const mappedAreas = areasWithCat.map((a:any) => ({...a}));
     for (const area of mappedAreas) { if(area.costo_area_formula){try{area.costo_area=calcularFormula(area.costo_area_formula,baseCtx,area.nombre);}catch{}}}
     setFormulaCtx({ ...baseCtx, areasData:mappedAreas.map((a:any)=>({nombre:a.nombre,metros_cuadrados:a.metros_cuadrados,cantidad_racks:a.cantidad_racks,metros_cubicos:a.metros_cubicos,costo_area:a.costo_area})) });
-    setLoading(false);
+    } catch (err) {
+      console.error('[CostosAlmacen] loadData error:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {

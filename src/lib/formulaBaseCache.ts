@@ -44,22 +44,8 @@ export async function fetchBaseQueryData(): Promise<BaseQueryData> {
   if (pending) return pending;
 
   pending = (async (): Promise<BaseQueryData> => {
-    const [
-      { data: areasData },
-      { data: invData },
-      { data: gastosColData },
-      { data: gastosFilData },
-      { data: areaDistribData },
-      { data: moColData },
-      { data: moFilData },
-      { data: empData },
-      { data: volColData },
-      { data: volFilData },
-      { data: volDistData },
-      { data: factoresData },
-      { data: masivoZonData },
-      { data: masivoTotales },
-    ] = await Promise.all([
+    // Use allSettled so a missing/broken table never crashes the whole cache load.
+    const results = await Promise.allSettled([
       supabase.from('areas').select('id, nombre, metros_cuadrados, cantidad_racks, metros_cubicos, categoria, costo_area, costo_area_formula').order('nombre'),
       supabase.from('inversiones').select('*').order('created_at'),
       supabase.from('gastos_varios_columnas').select('id, nombre, tipo').order('orden'),
@@ -67,7 +53,6 @@ export async function fetchBaseQueryData(): Promise<BaseQueryData> {
       supabase.from('area_distribution').select('area_name, global_distribution_percentage'),
       supabase.from('mano_obra_columnas').select('id, nombre, tipo, is_sensitive').order('orden'),
       supabase.from('mano_obra').select('id, area, valores'),
-      // Explicit column list avoids pulling metadata fields (import_batch_id, source_file_name, etc.)
       supabase.from('mano_obra_empleados').select('id, area, dist, puesto_descripcion, departamento, seccion, jefe_inmediato, empresa_lab, silo, tipo, is_active').eq('is_active', true),
       supabase.from('volumenes_columnas').select('id, nombre, tipo').order('orden'),
       supabase.from('volumenes').select('id, proceso, subproceso, valores'),
@@ -77,21 +62,27 @@ export async function fetchBaseQueryData(): Promise<BaseQueryData> {
       supabase.rpc('fn_volumenes_totales'),
     ]);
 
+    const r = (i: number): any[] => {
+      const res = results[i];
+      if (res.status === 'rejected') return [];
+      return (res.value as any)?.data ?? [];
+    };
+
     const data: BaseQueryData = {
-      areasData: areasData ?? [],
-      invData: invData ?? [],
-      gastosColData: gastosColData ?? [],
-      gastosFilData: gastosFilData ?? [],
-      areaDistribData: areaDistribData ?? [],
-      moColData: moColData ?? [],
-      moFilData: moFilData ?? [],
-      empData: empData ?? [],
-      volColData: volColData ?? [],
-      volFilData: volFilData ?? [],
-      volDistData: volDistData ?? [],
-      factoresData: factoresData ?? [],
-      masivoZonData: masivoZonData ?? [],
-      masivoTotales: masivoTotales ?? [],
+      areasData:      r(0),
+      invData:        r(1),
+      gastosColData:  r(2),
+      gastosFilData:  r(3),
+      areaDistribData:r(4),
+      moColData:      r(5),
+      moFilData:      r(6),
+      empData:        r(7),
+      volColData:     r(8),
+      volFilData:     r(9),
+      volDistData:    r(10),
+      factoresData:   r(11),
+      masivoZonData:  r(12),
+      masivoTotales:  r(13),
     };
 
     cache = { data, ts: Date.now() };
