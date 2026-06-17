@@ -106,9 +106,12 @@ function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
   );
 }
 
+// Formula columns are global — same set for every zone/cluster in this module
+const ALMACEN_COL_KEY = 'almacen_global';
+
 // ── Distribution table (article-level) ────────────────────────────────────────
-function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
-  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; colZoneKey: string;
+function TablaDistribucion({ formulaCtx, extraVars, activeZonas }: {
+  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[];
 }) {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
@@ -150,7 +153,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       const [{ data: invData }, { data: ubicData }, { data: colsData }] = await Promise.all([
         supabase.rpc(rpc, params),
         supabase.rpc(rpcUbic, { ...params, p_offset: 0, p_limit: 5000 }),
-        supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', colZoneKey).order('orden'),
+        supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
 
       const mapped: InvRow[] = ((invData ?? []) as any[]).map((r: any) => ({
@@ -234,7 +237,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       }
       setLoading(false);
     })();
-  }, [activeZonas.join(','), colZoneKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeZonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute slot costs (needs systemVarMap)
   const systemVarDefs_sc = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
@@ -354,7 +357,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
 
   const addCol = async () => {
     if(!newColName.trim())return;
-    const{data,error}=await supabase.from('costos_almacen_inv_distribucion_columnas').insert({nombre:newColName.trim(),orden:columnas.length,zona:colZoneKey}).select().maybeSingle();
+    const{data,error}=await supabase.from('costos_almacen_inv_distribucion_columnas').insert({nombre:newColName.trim(),orden:columnas.length,zona:ALMACEN_COL_KEY}).select().maybeSingle();
     if(error){alert(`Error: ${error.message}`);return;}
     if(data)setColumnas(prev=>[...prev,data as DistribCol]);
     setNewColName('');setAddingCol(false);
@@ -558,7 +561,6 @@ export default function CostosAlmacenPage() {
   const activeCluster = activeSelection.type === 'cluster' ? activeSelection.cluster : null;
   const activeZonas = isCluster ? (activeCluster?.zonas ?? []) : (activeZona ? [activeZona] : []);
   const zonaLabel = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZona;
-  const colZoneKey = useMemo(() => activeZonas.length === 1 ? activeZonas[0] : `_cluster_${[...activeZonas].sort().join('_')}`, [activeZonas.join(',')]); // eslint-disable-line
 
   const { clusters, loadClusters } = useZonaClusters('costos_almacen_inv_clusters');
 
@@ -689,7 +691,6 @@ export default function CostosAlmacenPage() {
                       formulaCtx={formulaCtx}
                       extraVars={varColValues}
                       activeZonas={activeZonas}
-                      colZoneKey={colZoneKey}
                     />
                   )}
                 </div>
