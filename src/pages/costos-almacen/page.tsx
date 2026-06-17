@@ -157,13 +157,30 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     setRows([]); setAggRows([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null);
     setLoading(true);
     const rpc = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_detalle' : 'fn_almacen_inv_zona_detalle';
-    const params = activeZonas.length > 1 ? { p_zonas: activeZonas, p_offset: 0, p_limit: 99999 } : { p_zona: activeZonas[0], p_offset: 0, p_limit: 99999 };
     const rpcUbic = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_ubicaciones' : 'fn_almacen_inv_zona_ubicaciones';
+    const baseParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
+
+    // Helper: paginate RPC calls to bypass PostgREST max_rows cap
+    async function fetchAllPages(rpcName: string, extraParams: Record<string,unknown> = {}): Promise<any[]> {
+      const CHUNK = 5000;
+      let all: any[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: chunk } = await supabase
+          .rpc(rpcName, { ...baseParams, ...extraParams, p_offset: offset, p_limit: CHUNK })
+          .range(0, CHUNK - 1);
+        if (!chunk || chunk.length === 0) break;
+        all = [...all, ...chunk];
+        if (chunk.length < CHUNK) break;
+        offset += CHUNK;
+      }
+      return all;
+    }
 
     (async () => {
-      const [{ data: invData }, { data: ubicData }, { data: colsData }] = await Promise.all([
-        supabase.rpc(rpc, params).range(0, 199999),
-        supabase.rpc(rpcUbic, { ...params, p_offset: 0, p_limit: 99999 }).range(0, 99999),
+      const [invData, ubicData, { data: colsData }] = await Promise.all([
+        fetchAllPages(rpc),
+        fetchAllPages(rpcUbic),
         supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', ALMACEN_COL_KEY).order('orden'),
       ]);
 
