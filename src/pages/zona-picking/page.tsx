@@ -641,12 +641,17 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
       const articulos = [...new Set(mapped.map(r => r.id_articulo).filter(Boolean))];
       if (articulos.length > 0) {
         const { data: volData } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
-        const vm: Record<string, number> = {};
+        // Average across all rows for the same article (RPC already averages within article+company)
+        const vmAcc: Record<string, {sum: number; count: number}> = {};
         for (const v of (volData ?? []) as any[]) {
           const art = String(v.id_articulo ?? '');
           const vol = Number(v.volumen) || 0;
-          if (!vm[art] || vol > vm[art]) vm[art] = vol;
+          if (!vmAcc[art]) vmAcc[art] = { sum: 0, count: 0 };
+          vmAcc[art].sum += vol;
+          vmAcc[art].count++;
         }
+        const vm: Record<string, number> = {};
+        for (const [art, { sum, count }] of Object.entries(vmAcc)) vm[art] = count > 0 ? sum / count : 0;
         setVolMap(vm);
       }
 

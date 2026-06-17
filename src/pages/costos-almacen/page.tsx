@@ -222,15 +222,18 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       if (articulos.length > 0) {
         const { data: volData, error: volErr } = await supabase.rpc('fn_almacen_volumetria_by_articulos', { p_articulos: articulos });
         if (volErr) console.error('[costos-almacen] volumetría RPC error:', volErr.message);
-        // Key: id_articulo only — volumen is an intrinsic property of the article,
-        // not company-specific. The inventario and volumetría may be from different companies.
-        const vm: Record<string, number> = {};
+        // Key: id_articulo only. Average across all rows (different companies) for same article.
+        // The RPC already averages within each (article, company) group via AVG().
+        const vmAcc: Record<string, {sum: number; count: number}> = {};
         for (const v of (volData ?? []) as any[]) {
           const art = String(v.id_articulo ?? '');
           const vol = Number(v.volumen) || 0;
-          // Keep the highest volume if multiple rows per article
-          if (!vm[art] || vol > vm[art]) vm[art] = vol;
+          if (!vmAcc[art]) vmAcc[art] = { sum: 0, count: 0 };
+          vmAcc[art].sum += vol;
+          vmAcc[art].count++;
         }
+        const vm: Record<string, number> = {};
+        for (const [art, { sum, count }] of Object.entries(vmAcc)) vm[art] = count > 0 ? sum / count : 0;
         setVolMap(vm);
       }
 
