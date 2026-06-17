@@ -117,8 +117,8 @@ function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
 const ALMACEN_COL_KEY = 'almacen_global';
 
 // ── Distribution table (article-level) ────────────────────────────────────────
-function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
-  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; filtros: FiltroUbicacion[];
+function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refreshKey }: {
+  formulaCtx: FormulaContext; extraVars: Record<string, number>; activeZonas: string[]; filtros: FiltroUbicacion[]; refreshKey: number;
 }) {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [ubicMap, setUbicMap] = useState<Record<string, UbicData>>({});
@@ -289,7 +289,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros }: {
       }
       setLoading(false);
     })();
-  }, [activeZonas.join(','), filtros.filter(f=>f.activo).map(f=>f.patron).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeZonas.join(','), filtros.filter(f=>f.activo).map(f=>f.patron).join(','), refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute slot costs (needs systemVarMap)
   const systemVarDefs_sc = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
@@ -730,6 +730,7 @@ export default function CostosAlmacenPage() {
   const [loading, setLoading]       = useState(true);
   const [showInvUpload, setShowInvUpload] = useState(false);
   const [showVolUpload, setShowVolUpload] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [clearing, setClearing]     = useState(false);
   const [tab, setTab]               = useState<Tab>('resumen');
   const [zonaResumen, setZonaResumen] = useState<ZonaResumen[]>([]);
@@ -904,6 +905,7 @@ export default function CostosAlmacenPage() {
                       extraVars={varColValues}
                       activeZonas={activeZonas}
                       filtros={filtros}
+                      refreshKey={refreshKey}
                     />
                   )}
                 </div>
@@ -982,12 +984,12 @@ export default function CostosAlmacenPage() {
 
       {showInvUpload && (
         <React.Suspense fallback={null}>
-          {React.createElement(React.lazy(()=>import('./components/InventarioUploadModal')), { onClose:()=>setShowInvUpload(false), onSuccess:loadData })}
+          {React.createElement(React.lazy(()=>import('./components/InventarioUploadModal')), { onClose:()=>setShowInvUpload(false), onSuccess:()=>{loadData();setRefreshKey(k=>k+1);} })}
         </React.Suspense>
       )}
       {showVolUpload && (
         <React.Suspense fallback={null}>
-          {React.createElement(React.lazy(()=>import('./components/VolumetriaUploadModal')), { onClose:()=>setShowVolUpload(false), onSuccess:loadData })}
+          {React.createElement(React.lazy(()=>import('./components/VolumetriaUploadModal')), { onClose:()=>setShowVolUpload(false), onSuccess:()=>{loadData();setRefreshKey(k=>k+1);} })}
         </React.Suspense>
       )}
     </AppLayout>
