@@ -119,6 +119,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
   const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string;tipo:string}[]>([]);
   const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
   const [pickingMatchMap, setPickingMatchMap] = useState<Record<string, PickingMatch>>({});
+  const [pickingRpcOk, setPickingRpcOk] = useState<boolean|null>(null); // null=no intentado, true=ok, false=RPC no existe
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<string>('zona_almacenaje');
@@ -185,16 +186,21 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       // Load picking match data (Máximos, Mínimos, % Picking from Zona Picking)
       const ubicacionesForPick = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
       if (ubicacionesForPick.length > 0) {
-        const { data: pickData } = await supabase.rpc('fn_picking_match_for_almacen', { p_ubicaciones: ubicacionesForPick });
-        const pm: Record<string, PickingMatch> = {};
-        for (const p of (pickData ?? []) as any[]) {
-          pm[`${String(p.id_articulo??'')}|${String(p.ubicacion??'')}|${String(p.id_compania??'')}`] = {
-            cant_maxima: Number(p.cant_maxima) || 0,
-            cant_minima: Number(p.cant_minima) || 0,
-            pct_picking: Number(p.pct_picking) || 0,
-          };
+        const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_ubicaciones: ubicacionesForPick });
+        if (pickErr) {
+          setPickingRpcOk(false);
+        } else {
+          setPickingRpcOk(true);
+          const pm: Record<string, PickingMatch> = {};
+          for (const p of (pickData ?? []) as any[]) {
+            pm[`${String(p.id_articulo??'')}|${String(p.ubicacion??'')}|${String(p.id_compania??'')}`] = {
+              cant_maxima: Number(p.cant_maxima) || 0,
+              cant_minima: Number(p.cant_minima) || 0,
+              pct_picking: Number(p.pct_picking) || 0,
+            };
+          }
+          setPickingMatchMap(pm);
         }
-        setPickingMatchMap(pm);
       }
 
       // Load slot stats
@@ -277,7 +283,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
     };
   }, [ubicMap, slotStats, slotCostoCols, slotCostos, volMap, totalArtsZona, pickingMatchMap, extraVars, systemVarMap]);
 
-  // Computed formula cells
+  // Computed formula cells — always per-row so every variable is available
   const computedCols = useMemo(() => {
     const result: Record<string, Record<string, {value:number|null;error:boolean;isGlobal:boolean}>> = {};
     const rowKey = (r: InvRow) => `${r.articulo}|${r.ubicacion}|${r.id_compania}`;
@@ -287,20 +293,21 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       result[col.id] = {};
       const colT = colNameToToken(col.nombre);
       const f = col.formula?.trim();
-      if (!f) { for (const r of rows) { accum[rowKey(r)][colT]=0; result[col.id][rowKey(r)]={value:null,error:false,isGlobal:false}; } continue; }
-      const hasRowV = /\{(CANTIDAD_UNIDADES|CANTIDAD_ALMACENAJE|VOLUMEN|TOTAL_ARTICULOS|SUMA_CANTIDAD_UBIC|ZONA_TOTAL_ARTS|SLOT_TOTAL|SLOT_LIBRES|SLOT_PCT_LIBRES)\}/i.test(f);
-      if (!hasRowV) {
-        const rv = evalFormula(f, {...systemVarMap}); const val = rv.ok ? rv.value : null;
-        for (const r of rows) { accum[rowKey(r)][colT]=val??0; result[col.id][rowKey(r)]={value:val,error:!rv.ok,isGlobal:true}; }
-      } else {
-        for (const r of rows) {
-          const k=rowKey(r); const vm={...buildRowVarMap(r),...accum[k]}; const ev=evalFormula(f,vm); const val=ev.ok?ev.value:null;
-          accum[k][colT]=val??0; result[col.id][k]={value:val,error:!ev.ok,isGlobal:false};
-        }
+      if (!f) {
+        for (const r of rows) { accum[rowKey(r)][colT]=0; result[col.id][rowKey(r)]={value:null,error:false,isGlobal:false}; }
+        continue;
+      }
+      for (const r of rows) {
+        const k = rowKey(r);
+        const vm = { ...buildRowVarMap(r), ...accum[k] };
+        const ev = evalFormula(f, vm);
+        const val = ev.ok ? ev.value : null;
+        accum[k][colT] = val ?? 0;
+        result[col.id][k] = { value: val, error: !ev.ok, isGlobal: false };
       }
     }
     return result;
-  }, [columnas, rows, buildRowVarMap, systemVarMap, colNameToToken]);
+  }, [columnas, rows, buildRowVarMap, colNameToToken]);
 
   const colOrder = useMemo(() => {
     const d = ['FIXED:articulo','FIXED:ubicacion','FIXED:descripcion','FIXED:zona','FIXED:cantidad_unidades','FIXED:cantidad_almacenaje','FIXED:volumen','FIXED:compania','FIXED:tipo_ubicacion','FIXED:estado',...columnas.map(c=>c.id)];
@@ -413,7 +420,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
                     </SFH>
                   ))}
                   {slotCostoCols.map(col=><th key={col.id} onClick={()=>toggleSort(`SLOT:${col.id}`)} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-emerald-100 bg-emerald-50 text-emerald-700" title={col.formula}><i className="ri-stack-line text-[10px] mr-1"/>{col.nombre} <i className={`ml-0.5 ${si(`SLOT:${col.id}`)}`}/></th>)}
-                  <th onClick={()=>toggleSort('PICK:cant_maxima')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700"><i className="ri-arrow-up-line text-[10px] mr-1"/>Cant. Máx. <i className={`ml-0.5 ${si('PICK:cant_maxima')}`}/></th>
+                  <th onClick={()=>toggleSort('PICK:cant_maxima')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700" title={pickingRpcOk===false?'Ejecuta fn_picking_match_for_almacen en Supabase SQL Editor':undefined}><i className="ri-arrow-up-line text-[10px] mr-1"/>Cant. Máx.{pickingRpcOk===false&&<span className="ml-1 text-[9px] px-1 py-0.5 bg-amber-100 text-amber-600 rounded font-normal">SQL pendiente</span>} <i className={`ml-0.5 ${si('PICK:cant_maxima')}`}/></th>
                   <th onClick={()=>toggleSort('PICK:cant_minima')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700"><i className="ri-arrow-down-line text-[10px] mr-1"/>Cant. Mín. <i className={`ml-0.5 ${si('PICK:cant_minima')}`}/></th>
                   <th onClick={()=>toggleSort('PICK:pct_picking')} className="px-3 py-2.5 text-right font-semibold border-r border-slate-200 whitespace-nowrap cursor-pointer hover:bg-indigo-100 bg-indigo-50/80 text-indigo-700">% Picking <i className={`ml-0.5 ${si('PICK:pct_picking')}`}/></th>
                   {columnas.map(col=><SCH key={col.id} col={col} onDelete={deleteCol} onEditFormula={(c,e)=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(x=>x.id===c.id);setEditingFormula({id:c.id,colIdx:ci,formula:c.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} onRename={async(id,n)=>{await supabase.from('costos_almacen_inv_distribucion_columnas').update({nombre:n}).eq('id',id);setColumnas(prev=>prev.map(c=>c.id===id?{...c,nombre:n}:c));}} onSort={()=>toggleSort(col.id)} sortIconClass={si(col.id)}/>)}
@@ -439,10 +446,10 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
                     <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100">{row.tipo_ubicacion||'—'}</td>
                     <td className="px-3 py-1.5 border-r border-slate-100">{row.estado?<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">{row.estado}</span>:'—'}</td>
                     {slotCostoCols.map(col=>{const val=slotCostos[row.ubicacion]?.[col.id];return<td key={`sc_${col.id}`} className="px-3 py-1.5 text-right border-r border-slate-100 bg-emerald-50/30"><span className={val!=null&&val>0?'text-emerald-700 font-bold tabular-nums':'text-slate-200 text-[10px]'}>{val!=null&&val>0?fmtDec(val):'—'}</span></td>;})}
-                    {(() => { const pick=pickingMatchMap[rk]; return (<>
-                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.cant_maxima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_maxima>0?fmt(pick.cant_maxima):'—'}</span></td>
-                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.cant_minima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_minima>0?fmt(pick.cant_minima):'—'}</span></td>
-                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20"><span className={pick?.pct_picking>0?'text-indigo-600 tabular-nums':'text-slate-200 text-[10px]'}>{pick?.pct_picking>0?fmtDec(pick.pct_picking)+'%':'—'}</span></td>
+                    {(() => { const pick=pickingMatchMap[rk]; const noRpc=pickingRpcOk===false; return (<>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic" title="Ejecuta fn_picking_match_for_almacen en Supabase">sin fn</span>:<span className={pick?.cant_maxima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_maxima>0?fmt(pick.cant_maxima):'—'}</span>}</td>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic">sin fn</span>:<span className={pick?.cant_minima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_minima>0?fmt(pick.cant_minima):'—'}</span>}</td>
+                      <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic">sin fn</span>:<span className={pick?.pct_picking>0?'text-indigo-600 tabular-nums':'text-slate-200 text-[10px]'}>{pick?.pct_picking>0?fmtDec(pick.pct_picking)+'%':'—'}</span>}</td>
                     </>); })()}
                     {columnas.map(col=>{const cell=computedCols[col.id]?.[rk];const hasF=!!cell?.formula;return<td key={col.id} onClick={e=>{const rect=(e.currentTarget as HTMLElement).getBoundingClientRect();const ci=columnas.findIndex(c=>c.id===col.id);setEditingFormula({id:col.id,colIdx:ci,formula:col.formula??'',position:{top:rect.bottom+4,left:Math.max(8,rect.left-250)}});}} className={`px-3 py-1.5 text-right border-r border-slate-100 cursor-pointer transition-colors ${hasF?'hover:bg-teal-100/60':'hover:bg-slate-100'}`}>{hasF?(cell?.error?<span className="text-rose-500 text-[10px]">Err</span>:cell?.isGlobal?<span className="text-slate-300 text-[10px] italic">—</span>:cell?.value!=null?<span className="text-teal-700 font-bold tabular-nums">{fmtDec(cell.value!)}</span>:<span className="text-slate-300">—</span>):<span className="text-slate-300 text-[10px]">—</span>}</td>;})}
                     <td className="px-1 py-1.5"/>
