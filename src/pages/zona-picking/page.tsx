@@ -603,12 +603,25 @@ function TablaDistribucionSlotPrime({ formulaCtx, extraVars, activeZonas }: { fo
     if (!activeZonas.length) { setRows([]); setUbicMap({}); return; }
     setLoading(true);
     const rpc = activeZonas.length > 1 ? 'fn_picking_zonas_detalle' : 'fn_picking_zona_detalle';
-    const params = activeZonas.length > 1
-      ? { p_zonas: activeZonas, p_offset: 0, p_limit: 99999 }
-      : { p_zona: activeZonas[0], p_offset: 0, p_limit: 99999 };
+    const baseZonaParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
+
+    async function fetchAllPickingPages(): Promise<any[]> {
+      const CHUNK = 1000;
+      let all: any[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: chunk } = await supabase.rpc(rpc, { ...baseZonaParams, p_offset: offset, p_limit: CHUNK });
+        if (!chunk || chunk.length === 0) break;
+        all = [...all, ...chunk];
+        if (chunk.length < CHUNK) break;
+        offset += CHUNK;
+      }
+      return all;
+    }
+
     (async () => {
-    const [{data: rpcData}, {data: cols}] = await Promise.all([
-      supabase.rpc(rpc, params).range(0, 99999),
+    const [rpcData, {data: cols}] = await Promise.all([
+      fetchAllPickingPages(),
       supabase.from('zona_picking_distribucion_columnas').select('*').eq('zona', distColZoneKey).order('orden'),
     ]);
     {
