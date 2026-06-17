@@ -134,16 +134,13 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
   const PAGE = 200;
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  // Load distribution columns for this zone
-  useEffect(() => {
-    supabase.from('costos_almacen_inv_distribucion_columnas').select('*').eq('zona', colZoneKey).order('orden').then(({ data }) => {
-      setColumnas((data ?? []) as DistribCol[]);
-    });
-  }, [colZoneKey]);
-
   // Load rows + cross-reference data
+  // NOTE: columns are loaded together with rows inside the async block below to avoid
+  // the race condition where a separate columns effect overwrites mid-computation.
   useEffect(() => {
-    if (!activeZonas.length) { setRows([]); setUbicMap({}); return; }
+    if (!activeZonas.length) { setRows([]); setUbicMap({}); setColumnas([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null); return; }
+    // Clear stale state from the previous zone/cluster immediately
+    setRows([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null);
     setLoading(true);
     const rpc = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_detalle' : 'fn_almacen_inv_zona_detalle';
     const params = activeZonas.length > 1 ? { p_zonas: activeZonas, p_offset: 0, p_limit: 9999 } : { p_zona: activeZonas[0], p_offset: 0, p_limit: 9999 };
