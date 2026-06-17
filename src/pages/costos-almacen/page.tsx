@@ -184,16 +184,18 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
       }
 
       // Load picking match data (Máximos, Mínimos, % Picking from Zona Picking)
-      const ubicacionesForPick = [...new Set(mapped.map(r => r.ubicacion).filter(Boolean))];
-      if (ubicacionesForPick.length > 0) {
-        const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_ubicaciones: ubicacionesForPick });
+      // Match key: Artículo + IdCompañía (picking zones differ from almacenaje zones)
+      const articulosForPick = [...new Set(mapped.map(r => r.articulo).filter(Boolean))];
+      if (articulosForPick.length > 0) {
+        const { data: pickData, error: pickErr } = await supabase.rpc('fn_picking_match_for_almacen', { p_articulos: articulosForPick });
         if (pickErr) {
           setPickingRpcOk(false);
         } else {
           setPickingRpcOk(true);
           const pm: Record<string, PickingMatch> = {};
           for (const p of (pickData ?? []) as any[]) {
-            pm[`${String(p.id_articulo??'')}|${String(p.ubicacion??'')}|${String(p.id_compania??'')}`] = {
+            // Key: articulo|compania (not by ubicacion — picking zones ≠ almacenaje zones)
+            pm[`${String(p.id_articulo??'')}|${String(p.id_compania??'')}`] = {
               cant_maxima: Number(p.cant_maxima) || 0,
               cant_minima: Number(p.cant_minima) || 0,
               pct_picking: Number(p.pct_picking) || 0,
@@ -263,7 +265,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
   const buildRowVarMap = useCallback((row: InvRow) => {
     const ubic = ubicMap[row.ubicacion] ?? { total_articulos:0, suma_cantidad:0, suma_cantidad_alm:0, companias:'' };
     const slot = slotStats[row.ubicacion];
-    const pick = pickingMatchMap[`${row.articulo}|${row.ubicacion}|${row.id_compania}`] ?? { cant_maxima:0, cant_minima:0, pct_picking:0 };
+    const pick = pickingMatchMap[`${row.articulo}|${row.id_compania}`] ?? { cant_maxima:0, cant_minima:0, pct_picking:0 };
     const slotCostVars: Record<string, number> = {};
     for (const col of slotCostoCols) { slotCostVars[col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase()] = slotCostos[row.ubicacion]?.[`name:${col.nombre}`] ?? 0; }
     return {
@@ -446,7 +448,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, colZoneKey }: {
                     <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100">{row.tipo_ubicacion||'—'}</td>
                     <td className="px-3 py-1.5 border-r border-slate-100">{row.estado?<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">{row.estado}</span>:'—'}</td>
                     {slotCostoCols.map(col=>{const val=slotCostos[row.ubicacion]?.[col.id];return<td key={`sc_${col.id}`} className="px-3 py-1.5 text-right border-r border-slate-100 bg-emerald-50/30"><span className={val!=null&&val>0?'text-emerald-700 font-bold tabular-nums':'text-slate-200 text-[10px]'}>{val!=null&&val>0?fmtDec(val):'—'}</span></td>;})}
-                    {(() => { const pick=pickingMatchMap[rk]; const noRpc=pickingRpcOk===false; return (<>
+                    {(() => { const pick=pickingMatchMap[`${row.articulo}|${row.id_compania}`]; const noRpc=pickingRpcOk===false; return (<>
                       <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic" title="Ejecuta fn_picking_match_for_almacen en Supabase">sin fn</span>:<span className={pick?.cant_maxima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_maxima>0?fmt(pick.cant_maxima):'—'}</span>}</td>
                       <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic">sin fn</span>:<span className={pick?.cant_minima>0?'text-indigo-700 font-medium tabular-nums':'text-slate-200 text-[10px]'}>{pick?.cant_minima>0?fmt(pick.cant_minima):'—'}</span>}</td>
                       <td className="px-3 py-1.5 text-right border-r border-slate-100 bg-indigo-50/20">{noRpc?<span className="text-amber-400 text-[9px] italic">sin fn</span>:<span className={pick?.pct_picking>0?'text-indigo-600 tabular-nums':'text-slate-200 text-[10px]'}>{pick?.pct_picking>0?fmtDec(pick.pct_picking)+'%':'—'}</span>}</td>
