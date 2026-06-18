@@ -794,6 +794,36 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
   const ZONE_COLORS = ['bg-indigo-500','bg-violet-500','bg-sky-500','bg-teal-500','bg-amber-500','bg-rose-500','bg-emerald-500','bg-orange-500'];
   const clusterColorMap: Record<string,string> = { indigo:'bg-indigo-500', violet:'bg-violet-500', sky:'bg-sky-500', teal:'bg-teal-500', emerald:'bg-emerald-500', amber:'bg-amber-500', rose:'bg-rose-500', orange:'bg-orange-500' };
 
+  const [exportingRaw, setExportingRaw] = React.useState(false);
+
+  const handleExportRaw = useCallback(async () => {
+    setExportingRaw(true);
+    try {
+      const label = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZone;
+      const zonas = isCluster ? activeClusterZonas : (activeZone ? [activeZone] : []);
+      if (!zonas.length) return;
+
+      const { data: json } = await supabase.rpc('fn_movimientos_raw_por_zonas', { p_zonas: zonas });
+      const allRows: any[] = Array.isArray(json) ? json : [];
+
+      const headers = [
+        'Id Movimiento','Artículo','Descripción','Id Compañía','Zona Almacenaje',
+        'Tipo Movimiento','Tipo Trabajo','Id Proceso','Id Subproceso',
+        'Cantidad','Cantidad Almacenaje','Ubicación',
+        'Fecha Generación','Fecha Cierre','Estado','Situación','Turno','Id Recurso',
+      ];
+      const rows = allRows.map(r => [
+        r.id_movimiento, r.articulo, r.descripcion, r.id_compania, r.zona_almacenaje,
+        r.tipo_movimiento, r.tipo_trabajo, r.id_proceso, r.id_subproceso,
+        r.cantidad, r.cantidad_almacenaje, r.ubicacion,
+        r.fecha_generacion, r.fecha_cierre, r.estado, r.situacion, r.turno, r.id_recurso,
+      ]);
+      downloadExcelMultiSheet(`movimientos_individuales_${label.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40)}.xlsx`, [
+        { name: 'Movimientos', headers, rows },
+      ]);
+    } finally { setExportingRaw(false); }
+  }, [isCluster, activeCluster, activeClusterZonas, activeZone]);
+
   const handleExportZona = useCallback(() => {
     const fmtN = (n: number|null|undefined) => n != null ? Math.round(n * 100) / 100 : 0;
     const label = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZone;
@@ -855,7 +885,10 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
         <p className="text-xs text-slate-500">Selecciona una zona o cluster para ver el desglose por artículo</p>
         <div className="flex items-center gap-2">
           <button onClick={handleExportZona} disabled={companiaLoading} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-            {companiaLoading ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Cargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx</>}
+            {companiaLoading ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Cargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Resumen .xlsx</>}
+          </button>
+          <button onClick={handleExportRaw} disabled={exportingRaw} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            {exportingRaw ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"/>Descargando...</> : <><i className="ri-list-check-3 text-slate-500"/>Movimientos individuales .xlsx</>}
           </button>
           <button onClick={() => setShowClusterManager(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
             <i className={`ri-settings-${showClusterManager ? 'fill' : '2-line'} text-sm`} />
