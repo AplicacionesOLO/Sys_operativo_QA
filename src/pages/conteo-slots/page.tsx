@@ -193,10 +193,12 @@ function ZonaDetailTable({
   const loadRows = useCallback(async () => {
     if (!zonas.length) return;
     setLoading(true);
-    const rpcName = zonas.length > 1 ? 'fn_slots_zonas_tipo_resumen' : 'fn_slots_zona_tipo_resumen';
-    const params = zonas.length > 1 ? { p_zonas: zonas, p_offset: 0, p_limit: 2000 } : { p_zona: zonas[0], p_offset: 0, p_limit: 2000 };
-    const { data } = await supabase.rpc(rpcName, params);
-    setRows(((data ?? []) as any[]).map((r: any) => ({
+    // JSON-returning RPCs bypass PostgREST max_rows — get all combinations at once
+    const rpcName = zonas.length > 1 ? 'fn_slots_zonas_tipo_resumen_all' : 'fn_slots_zona_tipo_resumen_all';
+    const params = zonas.length > 1 ? { p_zonas: zonas } : { p_zona: zonas[0] };
+    const { data: json } = await supabase.rpc(rpcName, params);
+    const data = Array.isArray(json) ? json : [];
+    setRows((data as any[]).map((r: any) => ({
       tipo_ubicacion: String(r.tipo_ubicacion ?? ''),
       dimension: String(r.dimension ?? ''),
       total: Number(r.total) || 0,
@@ -637,6 +639,41 @@ interface SlotRow {
 
 interface TipoCol { id: string; zona: string; tipo: string; nombre: string; formula?: string; orden: number; }
 
+// Async export button: fetches ALL slots via JSON RPC before generating Excel
+function ExportTipoButton({ tipo, zonas, tipoColumnas, computedTipoCols, colZoneKey }: {
+  tipo: string; zonas: string[]; tipoColumnas: TipoCol[];
+  computedTipoCols: Record<string, { value: number | null; error: boolean }>;
+  colZoneKey: string;
+}) {
+  const [exporting, setExporting] = React.useState(false);
+  const handle = async () => {
+    setExporting(true);
+    try {
+      const rpc = zonas.length > 1 ? 'fn_slots_detalle_por_zonas_tipo_all' : 'fn_slots_detalle_por_tipo_all';
+      const params = zonas.length > 1 ? { p_zonas: zonas, p_tipo: tipo } : { p_zona: zonas[0], p_tipo: tipo };
+      const { data: json } = await supabase.rpc(rpc, params);
+      const allSlots: any[] = Array.isArray(json) ? json : [];
+      const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : 0;
+      const fixedH = ['Ubicación','Coordenada','Categoría','Tipo','Dimensión','Estado'];
+      const colH = tipoColumnas.map(c => c.nombre);
+      const rows1 = allSlots.map(s => [
+        s.ubicacion, s.coordenada, s.categoria, s.tipo_ubicacion, s.dimension, s.estado,
+        ...tipoColumnas.map(c => fmtN(computedTipoCols[c.id]?.value)),
+      ]);
+      const rows2 = tipoColumnas.filter(c => c.formula).map(c => [c.nombre, c.formula ?? '']);
+      downloadExcelMultiSheet(`slots_${tipo.replace(/[^a-zA-Z0-9]/g,'_')}_${colZoneKey.slice(0,20)}.xlsx`, [
+        { name: tipo.slice(0,31), headers: [...fixedH,...colH], rows: rows1 },
+        ...(rows2.length > 0 ? [{ name: 'Fórmulas', headers: ['Columna','Fórmula'], rows: rows2 }] : []),
+      ]);
+    } finally { setExporting(false); }
+  };
+  return (
+    <button onClick={handle} disabled={exporting} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+      {exporting ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Descargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Descargar {tipo} .xlsx</>}
+    </button>
+  );
+}
+
 function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, systemVarMap }: {
   zonas: string[];
   colZoneKey: string;
@@ -787,24 +824,7 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
           <p className="text-sm font-semibold text-slate-800">Detalle por Tipo de Ubicación</p>
           <p className="text-xs text-slate-400 mt-0.5">Slot individual · Coordenada · Categoría · Precio via fórmulas</p>
         </div>
-        {selectedTipo && (
-          <button onClick={() => {
-            const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : 0;
-            const fixedH = ['Ubicación','Coordenada','Categoría','Tipo','Dimensión','Estado'];
-            const colH = tipoColumnas.map(c=>c.nombre);
-            const rows1 = filteredSlots.map(s => [
-              s.ubicacion, s.coordenada, s.categoria, s.tipo_ubicacion, s.dimension, s.estado,
-              ...tipoColumnas.map(c => fmtN(computedTipoCols[c.id]?.value)),
-            ]);
-            const rows2 = tipoColumnas.filter(c=>c.formula).map(c=>[c.nombre,c.formula??'']);
-            downloadExcelMultiSheet(`slots_${selectedTipo.replace(/[^a-zA-Z0-9]/g,'_')}_${colZoneKey.slice(0,20)}.xlsx`, [
-              { name: selectedTipo.slice(0,31), headers:[...fixedH,...colH], rows: rows1 },
-              ...(rows2.length>0?[{ name:'Fórmulas', headers:['Columna','Fórmula'], rows: rows2 }]:[]),
-            ]);
-          }} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-            <i className="ri-file-excel-2-line text-emerald-600"/>Descargar {selectedTipo} .xlsx
-          </button>
-        )}
+        {selectedTipo && <ExportTipoButton tipo={selectedTipo} zonas={zonas} tipoColumnas={tipoColumnas} computedTipoCols={computedTipoCols} colZoneKey={colZoneKey}/>}
       </div>
 
       {/* Tipo filter tabs */}

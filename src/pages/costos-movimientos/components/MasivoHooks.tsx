@@ -121,16 +121,9 @@ export function useMovimientosZonaCompaniaResumen(zona: string) {
   const load = useCallback(async () => {
     if (!zona) { setData(null); return; }
     setLoading(true);
-    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
-    let allRows: any[] = [];
-    let offset = 0;
-    while (true) {
-      const { data: page } = await supabase.rpc('fn_movimientos_zona_compania_articulo', { p_zona: zona, p_offset: offset, p_limit: PAGE });
-      if (!page || page.length === 0) break;
-      allRows = allRows.concat(page);
-      if (page.length < PAGE) break;
-      offset += PAGE;
-    }
+    // Single JSON request — bypasses PostgREST max_rows entirely
+    const { data: json } = await supabase.rpc('fn_movimientos_zona_compania_all', { p_zona: zona });
+    const allRows: any[] = Array.isArray(json) ? json : [];
     setData(allRows.map((r: any) => ({
       zona: String(r.zona ?? ''),
       idCompania: String(r.id_compania ?? ''),
@@ -278,16 +271,9 @@ export function useMovimientosClusterCompaniaResumen(zonas: string[]) {
   const load = useCallback(async () => {
     if (!zonas.length) { setData(null); return; }
     setLoading(true);
-    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
-    let allRows: any[] = [];
-    let offset = 0;
-    while (true) {
-      const { data: page } = await supabase.rpc('fn_movimientos_zonas_compania_articulo', { p_zonas: zonas, p_offset: offset, p_limit: PAGE });
-      if (!page || page.length === 0) break;
-      allRows = allRows.concat(page);
-      if (page.length < PAGE) break;
-      offset += PAGE;
-    }
+    // Single JSON request — bypasses PostgREST max_rows entirely
+    const { data: json } = await supabase.rpc('fn_movimientos_zonas_compania_all', { p_zonas: zonas });
+    const allRows: any[] = Array.isArray(json) ? json : [];
     setData(allRows.map((r: any) => ({
       zona: r.zona ?? 'CLUSTER',
       idCompania: String(r.id_compania ?? ''),
