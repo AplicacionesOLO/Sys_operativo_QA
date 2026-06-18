@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useTransition, useDeferredValue } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX } from '@/lib/formulaEngine';
@@ -793,6 +794,50 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
   const ZONE_COLORS = ['bg-indigo-500','bg-violet-500','bg-sky-500','bg-teal-500','bg-amber-500','bg-rose-500','bg-emerald-500','bg-orange-500'];
   const clusterColorMap: Record<string,string> = { indigo:'bg-indigo-500', violet:'bg-violet-500', sky:'bg-sky-500', teal:'bg-teal-500', emerald:'bg-emerald-500', amber:'bg-amber-500', rose:'bg-rose-500', orange:'bg-orange-500' };
 
+  const handleExportZona = useCallback(() => {
+    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n * 100) / 100 : 0;
+    const label = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZone;
+
+    // Sheet 1: Zone summary
+    const summaryHeaders = ['Zona','Movimientos','% Total Mov.','Cantidad','% Total Cant.','Artículos distintos'];
+    const summaryRows = rows.map(r => [
+      r.zona, r.movimientos,
+      fmtN(totalMov > 0 ? (r.movimientos / totalMov) * 100 : 0),
+      r.unidades,
+      fmtN(totalUnid > 0 ? (r.unidades / totalUnid) * 100 : 0),
+      r.articulos_distintos ?? 0,
+    ]);
+
+    // Sheet 2: Active zone/cluster article detail
+    const fixedH = ['Cía.','Artículo','Descripción','Movimientos','% Zona Mov.','Cantidad','% Zona Cant.','Prom.Mov/Mes','Prom.Cant/Mes'];
+    const colH = zonaColumnas.map(c => c.nombre);
+    const detailHeaders = [...fixedH, ...colH];
+    const detailRows = sortedArtsAll.map(art => {
+      const proms = getArtPromedios(art.idCompania, art.articulo);
+      return [
+        art.idCompania, art.articulo, art.descripcion,
+        art.movimientos,
+        fmtN(zoneTotalMov > 0 ? (art.movimientos / zoneTotalMov) * 100 : 0),
+        art.unidades,
+        fmtN(zoneTotalUnid > 0 ? (art.unidades / zoneTotalUnid) * 100 : 0),
+        fmtN(proms.promMov), fmtN(proms.promUnid),
+        ...zonaColumnas.map(c => fmtN(computedCells[c.id]?.[art.articulo]?.value)),
+      ];
+    });
+
+    // Sheet 3: Formula definitions
+    const fmlaHeaders = ['Columna','Fórmula'];
+    const fmlaRows = zonaColumnas.filter(c => c.formula).map(c => [c.nombre, c.formula ?? '']);
+
+    downloadExcelMultiSheet(`movimientos_zona_${label.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40)}.xlsx`, [
+      { name: 'Resumen Zonas',     headers: summaryHeaders, rows: summaryRows },
+      { name: `Detalle ${label}`.slice(0,31), headers: detailHeaders, rows: detailRows },
+      ...(fmlaRows.length > 0 ? [{ name: 'Fórmulas', headers: fmlaHeaders, rows: fmlaRows }] : []),
+    ]);
+  }, [rows, sortedArtsAll, zonaColumnas, computedCells, getArtPromedios,
+      totalMov, totalUnid, zoneTotalMov, zoneTotalUnid,
+      isCluster, activeCluster, activeZone]);
+
   if (loading) return <div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" /></div>;
   if (rows.length === 0) return <div className="flex items-center justify-center py-16"><p className="text-sm text-slate-400">No hay datos de zonas disponibles.</p></div>;
 
@@ -808,11 +853,16 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
       {/* Cluster manager toggle */}
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">Selecciona una zona o cluster para ver el desglose por artículo</p>
-        <button onClick={() => setShowClusterManager(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-          <i className={`ri-settings-${showClusterManager ? 'fill' : '2-line'} text-sm`} />
-          {showClusterManager ? 'Ocultar clusters' : 'Gestionar clusters'}
-          {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleExportZona} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            <i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx
+          </button>
+          <button onClick={() => setShowClusterManager(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            <i className={`ri-settings-${showClusterManager ? 'fill' : '2-line'} text-sm`} />
+            {showClusterManager ? 'Ocultar clusters' : 'Gestionar clusters'}
+            {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+          </button>
+        </div>
       </div>
 
       {showClusterManager && (
