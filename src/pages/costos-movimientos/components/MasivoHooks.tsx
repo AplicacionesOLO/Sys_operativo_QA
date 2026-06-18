@@ -56,7 +56,7 @@ export function useMovimientosArticuloResumen() {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const PAGE = 1000;
+      const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
       let allArticulos: any[] = [];
       let offset = 0;
       while (true) {
@@ -121,7 +121,7 @@ export function useMovimientosZonaCompaniaResumen(zona: string) {
   const load = useCallback(async () => {
     if (!zona) { setData(null); return; }
     setLoading(true);
-    const PAGE = 1000;
+    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
     let allRows: any[] = [];
     let offset = 0;
     while (true) {
@@ -155,7 +155,7 @@ export function useMovimientosZonaArticuloMensual(zona: string) {
   const load = useCallback(async () => {
     if (!zona) { setData(null); return; }
     setLoading(true);
-    const PAGE = 1000;
+    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
     let allRows: any[] = [];
     let offset = 0;
     while (true) {
@@ -278,7 +278,7 @@ export function useMovimientosClusterCompaniaResumen(zonas: string[]) {
   const load = useCallback(async () => {
     if (!zonas.length) { setData(null); return; }
     setLoading(true);
-    const PAGE = 1000;
+    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
     let allRows: any[] = [];
     let offset = 0;
     while (true) {
@@ -310,7 +310,7 @@ export function useMovimientosClusterMensual(zonas: string[]) {
   const load = useCallback(async () => {
     if (!zonas.length) { setData(null); return; }
     setLoading(true);
-    const PAGE = 1000;
+    const PAGE = 500; // Must be < PostgREST max_rows(1000) so chunk.length<PAGE correctly signals end-of-data
     let allRows: any[] = [];
     let offset = 0;
     while (true) {

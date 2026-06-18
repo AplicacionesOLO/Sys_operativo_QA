@@ -854,8 +854,8 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">Selecciona una zona o cluster para ver el desglose por artículo</p>
         <div className="flex items-center gap-2">
-          <button onClick={handleExportZona} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-            <i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx
+          <button onClick={handleExportZona} disabled={companiaLoading} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            {companiaLoading ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Cargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx</>}
           </button>
           <button onClick={() => setShowClusterManager(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
             <i className={`ri-settings-${showClusterManager ? 'fill' : '2-line'} text-sm`} />

@@ -787,6 +787,24 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
           <p className="text-sm font-semibold text-slate-800">Detalle por Tipo de Ubicación</p>
           <p className="text-xs text-slate-400 mt-0.5">Slot individual · Coordenada · Categoría · Precio via fórmulas</p>
         </div>
+        {selectedTipo && (
+          <button onClick={() => {
+            const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : 0;
+            const fixedH = ['Ubicación','Coordenada','Categoría','Tipo','Dimensión','Estado'];
+            const colH = tipoColumnas.map(c=>c.nombre);
+            const rows1 = filteredSlots.map(s => [
+              s.ubicacion, s.coordenada, s.categoria, s.tipo_ubicacion, s.dimension, s.estado,
+              ...tipoColumnas.map(c => fmtN(computedTipoCols[c.id]?.value)),
+            ]);
+            const rows2 = tipoColumnas.filter(c=>c.formula).map(c=>[c.nombre,c.formula??'']);
+            downloadExcelMultiSheet(`slots_${selectedTipo.replace(/[^a-zA-Z0-9]/g,'_')}_${colZoneKey.slice(0,20)}.xlsx`, [
+              { name: selectedTipo.slice(0,31), headers:[...fixedH,...colH], rows: rows1 },
+              ...(rows2.length>0?[{ name:'Fórmulas', headers:['Columna','Fórmula'], rows: rows2 }]:[]),
+            ]);
+          }} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            <i className="ri-file-excel-2-line text-emerald-600"/>Descargar {selectedTipo} .xlsx
+          </button>
+        )}
       </div>
 
       {/* Tipo filter tabs */}
