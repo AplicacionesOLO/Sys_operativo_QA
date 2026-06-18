@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useTransition, useDeferredValue } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
 import type { FormulaContext } from '@/lib/formulaEngine';
 import { EMPTY_FORMULA_CTX, toAllDataSources, calcularFormula } from '@/lib/formulaEngine';
@@ -391,6 +392,34 @@ function ZonaDetailTable({
     setColOrder(next);
   }, [columnOrder]);
 
+  const handleExport = useCallback(() => {
+    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n * 10000) / 10000 : 0;
+    const rk = (r: SlotsZonaTipoRow) => `${r.tipo_ubicacion}|${r.dimension}`;
+    const fixedH = ['Tipo Ubicación','Dimensión','Total','% Zona','Libres','% Libres','Bloqueados','Reservados','Otros'];
+    const colH = zonaColumnas.map(c => c.nombre);
+    const headers1 = [...fixedH, ...colH];
+    const rows1 = sortedRows.map(r => {
+      const pctZ = zoneTotalSlots > 0 ? fmtN((r.total / zoneTotalSlots) * 100) : 0;
+      const pctL = r.total > 0 ? fmtN((r.libres / r.total) * 100) : 0;
+      return [
+        r.tipo_ubicacion, r.dimension, r.total, pctZ, r.libres, pctL,
+        r.bloqueados, r.reservados, r.otros,
+        ...zonaColumnas.map(c => fmtN(computedCells[c.id]?.[rk(r)]?.value)),
+      ];
+    });
+    const headers2 = ['Columna','Fórmula','Ejemplo (primera fila)'];
+    const sKey = rows[0] ? rk(rows[0]) : '';
+    const rows2 = zonaColumnas.map(c => [
+      c.nombre,
+      c.formula ?? '(sin fórmula)',
+      fmtN(computedCells[c.id]?.[sKey]?.value),
+    ]);
+    downloadExcelMultiSheet(`costos_slots_${zona_label.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40)}.xlsx`, [
+      { name: 'Datos', headers: headers1, rows: rows1 },
+      ...(rows2.length > 0 ? [{ name: 'Fórmulas', headers: headers2, rows: rows2 }] : []),
+    ]);
+  }, [sortedRows, zonaColumnas, computedCells, zoneTotalSlots, zona_label, rows]);
+
   if (loading) return <div className="flex items-center justify-center py-16"><div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin"/></div>;
   if (!rows.length && !loading) return <div className="flex items-center justify-center py-16"><p className="text-sm text-slate-400">Sin datos para {zona_label}</p></div>;
 
@@ -412,10 +441,15 @@ function ZonaDetailTable({
       {/* Cluster manager */}
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-400">Tabla Tipo Ubicación × Dimensión · Agrega columnas de fórmula con el botón +</p>
-        <button onClick={() => setShowClusterMgr(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-          <i className={`ri-stack-${showClusterMgr?'fill':'line'} text-sm`}/>Clusters
-          {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-cyan-100 text-cyan-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 border border-cyan-300 text-cyan-700 hover:bg-cyan-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            <i className="ri-file-excel-2-line text-emerald-600"/>Descargar .xlsx
+          </button>
+          <button onClick={() => setShowClusterMgr(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            <i className={`ri-stack-${showClusterMgr?'fill':'line'} text-sm`}/>Clusters
+            {clusters.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-cyan-100 text-cyan-700 rounded-full text-[10px] font-semibold">{clusters.length}</span>}
+          </button>
+        </div>
       </div>
       {showClusterMgr && <ZonaClusterManager tableName="conteo_slots_clusters" clusters={clusters} zonas={allZonaNames} onChanged={onClustersChange}/>}
 
