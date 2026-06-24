@@ -460,13 +460,14 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
   const activeClusterZonas = activeCluster?.zonas ?? [];
 
   const { data: companiaDataZone,  loading: companiaLoadingZone  } = useMovimientosZonaCompaniaResumen(activeZone);
-  const { data: mensualDataZone }  = useMovimientosZonaArticuloMensual(activeZone);
+  const { data: mensualDataZone,  loading: mensualLoadingZone   } = useMovimientosZonaArticuloMensual(activeZone);
   const { data: companiaDataCluster, loading: companiaLoadingCluster } = useMovimientosClusterCompaniaResumen(activeClusterZonas);
-  const { data: mensualDataCluster } = useMovimientosClusterMensual(activeClusterZonas);
+  const { data: mensualDataCluster, loading: mensualLoadingCluster } = useMovimientosClusterMensual(activeClusterZonas);
 
   const companiaData    = isCluster ? companiaDataCluster  : companiaDataZone;
   const articuloMensualData = isCluster ? mensualDataCluster : mensualDataZone;
   const companiaLoading = isCluster ? companiaLoadingCluster : companiaLoadingZone;
+  const mensualLoading  = isCluster ? mensualLoadingCluster  : mensualLoadingZone;
 
   // Zones not belonging to any cluster
   const allZoneNames = rows.map(r => r.zona);
@@ -884,8 +885,8 @@ function ZonaResumenTable({ data, loading, globalTotals, formulaCtx, clusters, o
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">Selecciona una zona o cluster para ver el desglose por artículo</p>
         <div className="flex items-center gap-2">
-          <button onClick={handleExportZona} disabled={companiaLoading} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
-            {companiaLoading ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Cargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Resumen .xlsx</>}
+          <button onClick={handleExportZona} disabled={companiaLoading || mensualLoading} className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
+            {(companiaLoading || mensualLoading) ? <><div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin"/>Cargando...</> : <><i className="ri-file-excel-2-line text-emerald-600"/>Resumen .xlsx</>}
           </button>
           <button onClick={handleExportRaw} disabled={exportingRaw} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-wait text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap">
             {exportingRaw ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"/>Descargando...</> : <><i className="ri-list-check-3 text-slate-500"/>Movimientos individuales .xlsx</>}
