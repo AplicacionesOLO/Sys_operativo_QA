@@ -330,26 +330,26 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     setSlotCostos(cosMap);
   }, [slotStats, slotRawCols, slotTdMap, systemVarMap_sc]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build article-level slot cost averages from per-location costs × rows
+  // Build article-level slot cost totals: sum over unique ubicaciones per article
   useEffect(() => {
     if (!rows.length || !slotCostoCols.length) { setArtSlotCostMap({}); return; }
-    const acc: Record<string, Record<string, {s:number;c:number}>> = {};
+    // Sum slot costs per article across UNIQUE ubicaciones (not an average).
+    // Each raw row can repeat the same ubicacion (different companies/states), so we
+    // deduplicate by ubicacion before summing to avoid inflating the total.
+    const seenUbic: Record<string, Set<string>> = {};
+    const acc: Record<string, Record<string, number>> = {};
     for (const r of rows) {
+      if (!seenUbic[r.articulo]) seenUbic[r.articulo] = new Set();
+      if (seenUbic[r.articulo].has(r.ubicacion)) continue;
+      seenUbic[r.articulo].add(r.ubicacion);
       if (!acc[r.articulo]) acc[r.articulo] = {};
       for (const col of slotCostoCols) {
         const tk = col.nombre.replace(/[^a-zA-Z0-9]/g,'_').toUpperCase();
         const v = slotCostos[r.ubicacion]?.[`name:${col.nombre}`] ?? 0;
-        if (!acc[r.articulo][tk]) acc[r.articulo][tk] = {s:0,c:0};
-        acc[r.articulo][tk].s += v;
-        acc[r.articulo][tk].c++;
+        acc[r.articulo][tk] = (acc[r.articulo][tk] ?? 0) + v;
       }
     }
-    const am: Record<string, Record<string, number>> = {};
-    for (const [art, cols] of Object.entries(acc)) {
-      am[art] = {};
-      for (const [k, {s,c}] of Object.entries(cols)) am[art][k] = c>0 ? s/c : 0;
-    }
-    setArtSlotCostMap(am);
+    setArtSlotCostMap(acc);
   }, [rows, slotCostos, slotCostoCols]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const systemVarDefs = useMemo(():VariableDef[]=>{try{return buildVariableDefs(toAllDataSources(formulaCtx));}catch{return [];}},[ formulaCtx]);
