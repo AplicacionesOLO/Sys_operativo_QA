@@ -291,7 +291,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
         const tdMap: Record<string, any> = {};
-        for (const td of (tdData ?? []) as any[]) { const k=`${td.zona_almacenaje}|${td.tipo_ubicacion}|${td.dimension}`; tdMap[k]={total:Number(td.total)||0,libres:Number(td.libres)||0,bloqueados:Number(td.bloqueados)||0,reservados:Number(td.reservados)||0,otros:Number(td.otros)||0,zona_total:Number(td.zona_total)||0,pct_zona:Number(td.pct_zona)||0,pct_libres:Number(td.pct_libres)||0}; }
+        for (const td of (tdData ?? []) as any[]) { const k=`${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}|${td.dimension??''}`; tdMap[k]={total:Number(td.total)||0,libres:Number(td.libres)||0,bloqueados:Number(td.bloqueados)||0,reservados:Number(td.reservados)||0,otros:Number(td.otros)||0,zona_total:Number(td.zona_total)||0,pct_zona:Number(td.pct_zona)||0,pct_libres:Number(td.pct_libres)||0}; }
         setSlotTdMap(tdMap);
         const rawCols = ((slotCols ?? []) as any[]).filter((c:any)=>c.formula?.trim()).map((c:any)=>({id:String(c.id),nombre:String(c.nombre),formula:String(c.formula),zona:String(c.zona??''),tipo:String(c.tipo??'')}));
         setSlotRawCols(rawCols);
@@ -320,7 +320,11 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       const seen3 = new Set<string>();
       for (const col of slotRawCols) {
         if (seen3.has(col.nombre)) continue;
-        const best = slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion && zonaMatchFn(c.zona, st.zona_almacenaje));
+        const best =
+          slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
+          slotRawCols.find(c => c.nombre===col.nombre && !c.tipo && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
+          slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion) ??
+          slotRawCols.find(c => c.nombre===col.nombre && !c.tipo);
         if (!best) continue;
         const ev = evalFormula(best.formula, vm);
         cosMap[ubic][`name:${col.nombre}`] = ev.ok ? ev.value : 0;
@@ -463,7 +467,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
   const handleDragEnd = useCallback((event:DragEndEvent)=>{const{active,over}=event;if(!over||active.id===over.id)return;const cur=colOrder;const oi=cur.indexOf(String(active.id));const ni=cur.indexOf(String(over.id));if(oi===-1||ni===-1)return;},[colOrder]);
 
   const handleExport = useCallback(() => {
-    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*10000)/10000 : '';
+    const fmtN = (n: number|null|undefined) => n != null ? Math.round(n*100)/100 : '';
     // Sheet 1 — main data
     const fixedHeaders = ['Artículo','Descripción','Zona Almacenaje','Cant. Ubicaciones','Σ Cant. Unidades','Σ Cant. Alm.','Volumen','Compañía'];
     const colHeaders = columnas.map(c => c.nombre);
