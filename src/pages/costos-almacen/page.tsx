@@ -128,6 +128,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
   const [slotCostos, setSlotCostos] = useState<Record<string, Record<string, number>>>({});
   const [slotRawCols, setSlotRawCols] = useState<{id:string;nombre:string;formula:string;zona:string;tipo:string}[]>([]);
   const [slotTdMap, setSlotTdMap] = useState<Record<string, any>>({});
+  const [slotCostosDebug, setSlotCostosDebug] = useState<Record<string, string>>({});
   const [pickingMatchMap, setPickingMatchMap] = useState<Record<string, PickingMatch>>({});
   const [pickingRpcOk, setPickingRpcOk] = useState<boolean|null>(null); // null=no intentado, true=ok, false=RPC no existe
   const [artUbicMap, setArtUbicMap] = useState<Record<string, ArtUbicData>>({});
@@ -312,26 +313,35 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     if (!Object.keys(slotStats).length || !slotRawCols.length || !Object.keys(slotTdMap).length) return;
     const zonaMatchFn = (colZ: string, ubZ: string) => colZ === ubZ || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
     const cosMap: Record<string, Record<string, number>> = {};
+    const dbgMap: Record<string, string> = {};
     for (const [ubic, st] of Object.entries(slotStats)) {
       const td = slotTdMap[`${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`];
-      if (!td) continue;
+      if (!td) {
+        dbgMap[ubic] = `Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'} | Dim: ${st.dimension||'—'}\n⚠ Sin estadísticas para esta combinación en fn_slot_tipo_dim_stats.\nVerifica que la zona y tipo existan en Conteo de Slots.`;
+        continue;
+      }
       const vm = { TOTAL:td.total,LIBRES:td.libres,BLOQUEADOS:td.bloqueados,RESERVADOS:td.reservados,OTROS:td.otros,ZONA_TOTAL:td.zona_total,PCT_ZONA:td.pct_zona,PCT_LIBRES:td.pct_libres, TOTAL_TIPO:td.total,LIBRES_TIPO:td.libres,BLOQUEADOS_TIPO:td.bloqueados,RESERVADOS_TIPO:td.reservados,OTROS_TIPO:td.otros,PCT_TIPO_ZONA:td.pct_zona,PCT_LIBRES_TIPO:td.pct_libres,...systemVarMap_sc };
       cosMap[ubic] = {};
       const seen3 = new Set<string>();
+      const lines: string[] = [`Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'}`];
       for (const col of slotRawCols) {
         if (seen3.has(col.nombre)) continue;
+        seen3.add(col.nombre);
         const best =
           slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
           slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo);
-        if (!best) continue;
+        if (!best) { lines.push(`⚠ ${col.nombre}: sin fórmula para tipo "${st.tipo_ubicacion||'—'}" / zona "${st.zona_almacenaje||'—'}"`); continue; }
         const ev = evalFormula(best.formula, vm);
-        cosMap[ubic][`name:${col.nombre}`] = ev.ok ? ev.value : 0;
-        seen3.add(col.nombre);
+        const val = ev.ok ? ev.value : 0;
+        cosMap[ubic][`name:${col.nombre}`] = val;
+        lines.push(val !== 0 ? `✓ ${col.nombre}: ${val.toFixed(2)}` : `⚠ ${col.nombre}: fórmula = 0 (expr: ${best.formula.slice(0,60)}${best.formula.length>60?'...':''})`);
       }
+      dbgMap[ubic] = lines.join('\n');
     }
     setSlotCostos(cosMap);
+    setSlotCostosDebug(dbgMap);
   }, [slotStats, slotRawCols, slotTdMap, systemVarMap_sc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build article-level slot cost totals: sum over unique ubicaciones per article
@@ -704,7 +714,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
           <div className="mt-3 border border-slate-200 rounded-lg overflow-auto max-h-[50vh]">
             <table className="text-xs whitespace-nowrap w-full">
               <thead><tr className="bg-slate-50 sticky top-0 z-10"><th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Ubicación</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Artículos</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Σ Cant.</th><th className="px-3 py-2.5 text-right text-slate-500 font-semibold border-r border-slate-200">Σ Cant. Alm.</th>{slotCostoCols.map(col=><th key={col.id} className="px-3 py-2.5 text-right text-teal-600 font-semibold border-r border-slate-200 bg-teal-50/50">{col.nombre}</th>)}<th className="px-3 py-2.5 text-left text-slate-500 font-semibold">Compañías</th></tr></thead>
-              <tbody>{ubicRows.map((r:any,i:number)=><tr key={r.ubicacion+i} className={`border-t border-slate-100 hover:bg-teal-50/40 ${i%2===0?'bg-white':'bg-slate-50/30'}`}><td className="px-3 py-2 font-mono text-[11px] text-slate-700 border-r border-slate-100 font-medium">{r.ubicacion||'—'}</td><td className="px-3 py-2 text-right font-bold text-teal-700 border-r border-slate-100">{fmt(r.total_articulos)}</td><td className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(r.suma_cantidad)}</td><td className="px-3 py-2 text-right text-slate-500 border-r border-slate-100">{fmt(r.suma_cantidad_alm)}</td>{slotCostoCols.map(col=><td key={col.id} className="px-3 py-2 text-right font-bold text-teal-700 border-r border-slate-100">{fmtDec(slotCostos[r.ubicacion]?.['name:'+col.nombre]??0)}</td>)}<td className="px-3 py-2 text-slate-400 max-w-[200px] overflow-hidden text-ellipsis">{r.companias||'—'}</td></tr>)}</tbody>
+              <tbody>{ubicRows.map((r:any,i:number)=><tr key={r.ubicacion+i} className={`border-t border-slate-100 hover:bg-teal-50/40 ${i%2===0?'bg-white':'bg-slate-50/30'}`}><td className="px-3 py-2 font-mono text-[11px] text-slate-700 border-r border-slate-100 font-medium">{r.ubicacion||'—'}</td><td className="px-3 py-2 text-right font-bold text-teal-700 border-r border-slate-100">{fmt(r.total_articulos)}</td><td className="px-3 py-2 text-right text-slate-600 border-r border-slate-100">{fmt(r.suma_cantidad)}</td><td className="px-3 py-2 text-right text-slate-500 border-r border-slate-100">{fmt(r.suma_cantidad_alm)}</td>{slotCostoCols.map(col=>{const val=slotCostos[r.ubicacion]?.['name:'+col.nombre]??0;const dbg=slotCostosDebug[r.ubicacion]??(Object.keys(slotStats).length>0?'⚠ Ubicación no encontrada en Conteo de Slots — no hay datos de tipo/dimensión para esta ubicación':'');return(<td key={col.id} title={dbg} className={`px-3 py-2 text-right border-r border-slate-100 cursor-help ${val>0?'font-bold text-teal-700':slotCostosDebug[r.ubicacion]?'text-amber-500':'text-rose-400'}`}>{fmtDec(val)}</td>);})}<td className="px-3 py-2 text-slate-400 max-w-[200px] overflow-hidden text-ellipsis">{r.companias||'—'}</td></tr>)}</tbody>
             </table>
           </div>
         )}
