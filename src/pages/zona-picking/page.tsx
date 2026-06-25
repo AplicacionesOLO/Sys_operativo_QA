@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useDeferredValue, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import { downloadExcelMultiSheet } from '@/lib/csvExport';
@@ -53,30 +53,92 @@ const PICKING_TOKENS = [
 
 // ── Raw Table ─────────────────────────────────────────────────────────────────
 function RawTable({ headers }: { headers: string[] }) {
-  const [rows, setRows] = useState<Array<{ id: string; raw_data: Record<string, unknown> }>>([]);
-  const [page, setPage] = useState(0);
-  const [count, setCount] = useState(0);
-  const [loading, setLoading] = useState(false);
   const PAGE = 50;
-  const load = useCallback(async (p: number) => {
+  const [rows, setRows]           = useState<Array<{ id: string; raw_data: Record<string, unknown> }>>([]);
+  const [page, setPage]           = useState(0);
+  const [count, setCount]         = useState(0);
+  const [loading, setLoading]     = useState(false);
+  const [colHeaders, setColHeaders] = useState<string[]>([]);
+  const [filterCol, setFilterCol]   = useState('');
+  const [filterInput, setFilterInput] = useState('');
+  const [activeCol, setActiveCol]   = useState('');
+  const [activeTerm, setActiveTerm] = useState('');
+  const initRef = useRef(false);
+
+  const load = useCallback(async (p: number, col: string, term: string) => {
     setLoading(true);
-    const { data, count: c } = await supabase.from('zona_picking_raw').select('id,raw_data', { count:'exact' }).order('created_at',{ascending:false}).range(p*PAGE,(p+1)*PAGE-1);
-    if (data) { setRows(data as any); setCount(c ?? 0); }
+    let q = supabase.from('zona_picking_raw').select('id,raw_data', { count:'exact' })
+      .order('created_at', { ascending: false })
+      .range(p * PAGE, (p + 1) * PAGE - 1);
+    if (col && term) q = (q as any).filter(`raw_data->>'${col}'`, 'ilike', `%${term}%`);
+    const { data, count: c } = await q;
+    if (data) {
+      setRows(data as any); setCount(c ?? 0);
+      if ((data as any[]).length && !initRef.current) {
+        initRef.current = true;
+        const hdrs = Object.keys((data as any[])[0].raw_data ?? {});
+        setColHeaders(hdrs);
+        setFilterCol(fc => fc || hdrs[0] || '');
+      }
+    }
     setLoading(false);
   }, []);
-  useEffect(() => { load(page); }, [load, page]);
+
+  useEffect(() => {
+    initRef.current = false;
+    setColHeaders([]); setFilterInput(''); setFilterCol(''); setActiveCol(''); setActiveTerm(''); setPage(0);
+    load(0, '', '');
+  }, [load]);
+  useEffect(() => { load(page, activeCol, activeTerm); }, [load, page, activeCol, activeTerm]);
+
+  const applySearch = () => { setPage(0); setActiveCol(filterCol); setActiveTerm(filterInput); };
+  const clearSearch = () => { setFilterInput(''); setPage(0); setActiveCol(''); setActiveTerm(''); };
+
   const totalPages = Math.ceil(count / PAGE);
   const dh = headers.length > 0 ? headers : (rows[0]?.raw_data ? Object.keys(rows[0].raw_data) : []);
+  const isFiltered = !!(activeCol && activeTerm);
+
   return (
     <div className="space-y-3">
-      <span className="text-xs text-slate-400">Pág. {page+1}/{Math.max(totalPages,1)} · {fmt(count)} filas</span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <select value={filterCol} onChange={e => setFilterCol(e.target.value)}
+          className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 bg-white max-w-[200px]">
+          {colHeaders.length ? colHeaders.map(h=><option key={h} value={h}>{h}</option>) : <option value="">— columna —</option>}
+        </select>
+        <input type="text" value={filterInput} onChange={e => setFilterInput(e.target.value)}
+          onKeyDown={e => e.key==='Enter' && applySearch()}
+          placeholder="Buscar..." className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 flex-1 min-w-[120px]"/>
+        <button onClick={applySearch} className="px-3 py-1.5 text-xs bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 cursor-pointer whitespace-nowrap">
+          <i className="ri-search-line mr-1"/>Buscar
+        </button>
+        {isFiltered && <button onClick={clearSearch} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer" title="Limpiar filtro">
+          <i className="ri-close-line"/>
+        </button>}
+      </div>
+      <span className="text-xs text-slate-400">
+        {isFiltered ? `${fmt(count)} resultado(s) · "${activeTerm}" en ${activeCol}` : `${fmt(count)} filas`} · Pág. {page+1}/{Math.max(totalPages,1)}
+      </span>
       <div className="border border-slate-200 rounded-lg overflow-auto max-h-[55vh]">
         <table className="text-xs whitespace-nowrap w-full">
-          <thead><tr className="bg-slate-50 sticky top-0 z-10"><th className="px-3 py-2 text-left text-slate-500 border-r border-slate-200">#</th>{dh.map(h=><th key={h} className="px-3 py-2 text-left text-slate-500 border-r border-slate-200 max-w-[160px] overflow-hidden text-ellipsis">{h}</th>)}</tr></thead>
-          <tbody>{loading?<tr><td colSpan={dh.length+1} className="px-3 py-8 text-center text-slate-400">Cargando...</td></tr>:rows.map((r,i)=><tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50"><td className="px-3 py-1.5 text-slate-400 border-r border-slate-100 text-center">{page*PAGE+i+1}</td>{dh.map(h=>{const v=r.raw_data?.[h];return<td key={h} className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis">{v!=null?String(v):'—'}</td>;})}</tr>)}</tbody>
+          <thead><tr className="bg-slate-50 sticky top-0 z-10">
+            <th className="px-3 py-2 text-left text-slate-500 border-r border-slate-200">#</th>
+            {dh.map(h=><th key={h} className="px-3 py-2 text-left text-slate-500 border-r border-slate-200 max-w-[160px] overflow-hidden text-ellipsis">{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {loading ? <tr><td colSpan={dh.length+1} className="px-3 py-8 text-center text-slate-400">Cargando...</td></tr>
+            : rows.map((r,i) => <tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50">
+                <td className="px-3 py-1.5 text-slate-400 border-r border-slate-100 text-center">{page*PAGE+i+1}</td>
+                {dh.map(h => { const v = r.raw_data?.[h]; return <td key={h} className="px-3 py-1.5 text-slate-600 border-r border-slate-100 max-w-[160px] overflow-hidden text-ellipsis">{v!=null?String(v):'—'}</td>; })}
+              </tr>)
+            }
+          </tbody>
         </table>
       </div>
-      {totalPages>1&&<div className="flex items-center justify-between gap-3"><button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer"><i className="ri-arrow-left-line mr-1"/>Anterior</button><span className="text-xs text-slate-400">{page+1}/{totalPages}</span><button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer">Siguiente<i className="ri-arrow-right-line ml-1"/></button></div>}
+      {totalPages>1 && <div className="flex items-center justify-between gap-3">
+        <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer"><i className="ri-arrow-left-line mr-1"/>Anterior</button>
+        <span className="text-xs text-slate-400">{page+1}/{totalPages}</span>
+        <button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 cursor-pointer">Siguiente<i className="ri-arrow-right-line ml-1"/></button>
+      </div>}
     </div>
   );
 }

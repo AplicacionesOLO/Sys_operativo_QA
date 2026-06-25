@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useTransition, useDeferredValue } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useTransition, useDeferredValue, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import AppLayout from '@/components/feature/AppLayout';
 import { downloadExcelMultiSheet } from '@/lib/csvExport';
@@ -70,23 +70,71 @@ const SLOT_TOKENS = [
 
 // ── Raw Table ─────────────────────────────────────────────────────────────────
 function RawTable({ headers }: { headers: string[] }) {
-  const [rows, setRows] = useState<Array<{ id: string; raw_data: Record<string, unknown> }>>([]);
-  const [page, setPage] = useState(0);
-  const [count, setCount] = useState(0);
-  const [loading, setLoading] = useState(false);
   const PAGE = 50;
-  const load = useCallback(async (p: number) => {
+  const [rows, setRows]           = useState<Array<{ id: string; raw_data: Record<string, unknown> }>>([]);
+  const [page, setPage]           = useState(0);
+  const [count, setCount]         = useState(0);
+  const [loading, setLoading]     = useState(false);
+  const [colHeaders, setColHeaders] = useState<string[]>([]);
+  const [filterCol, setFilterCol]   = useState('');
+  const [filterInput, setFilterInput] = useState('');
+  const [activeCol, setActiveCol]   = useState('');
+  const [activeTerm, setActiveTerm] = useState('');
+  const initRef = useRef(false);
+
+  const load = useCallback(async (p: number, col: string, term: string) => {
     setLoading(true);
-    const { data, count: c } = await supabase.from('conteo_slots_raw').select('id, raw_data', { count: 'exact' }).order('created_at', { ascending: false }).range(p * PAGE, (p + 1) * PAGE - 1);
-    if (data) { setRows(data as any); setCount(c ?? 0); }
+    let q = supabase.from('conteo_slots_raw').select('id, raw_data', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(p * PAGE, (p + 1) * PAGE - 1);
+    if (col && term) q = (q as any).filter(`raw_data->>'${col}'`, 'ilike', `%${term}%`);
+    const { data, count: c } = await q;
+    if (data) {
+      setRows(data as any); setCount(c ?? 0);
+      if ((data as any[]).length && !initRef.current) {
+        initRef.current = true;
+        const hdrs = Object.keys((data as any[])[0].raw_data ?? {});
+        setColHeaders(hdrs);
+        setFilterCol(fc => fc || hdrs[0] || '');
+      }
+    }
     setLoading(false);
   }, []);
-  useEffect(() => { load(page); }, [load, page]);
+
+  useEffect(() => {
+    initRef.current = false;
+    setColHeaders([]); setFilterInput(''); setFilterCol(''); setActiveCol(''); setActiveTerm(''); setPage(0);
+    load(0, '', '');
+  }, [load]);
+  useEffect(() => { load(page, activeCol, activeTerm); }, [load, page, activeCol, activeTerm]);
+
+  const applySearch = () => { setPage(0); setActiveCol(filterCol); setActiveTerm(filterInput); };
+  const clearSearch = () => { setFilterInput(''); setPage(0); setActiveCol(''); setActiveTerm(''); };
+
   const totalPages = Math.ceil(count / PAGE);
   const dh = headers.length > 0 ? headers : (rows[0]?.raw_data ? Object.keys(rows[0].raw_data) : []);
+  const isFiltered = !!(activeCol && activeTerm);
+
   return (
     <div className="space-y-3">
-      <span className="text-xs text-slate-400">Pág. {page + 1}/{Math.max(totalPages,1)} · {fmt(count)} slots</span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <select value={filterCol} onChange={e => setFilterCol(e.target.value)}
+          className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 bg-white max-w-[200px]">
+          {colHeaders.length ? colHeaders.map(h=><option key={h} value={h}>{h}</option>) : <option value="">— columna —</option>}
+        </select>
+        <input type="text" value={filterInput} onChange={e => setFilterInput(e.target.value)}
+          onKeyDown={e => e.key==='Enter' && applySearch()}
+          placeholder="Buscar..." className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 text-slate-600 flex-1 min-w-[120px]"/>
+        <button onClick={applySearch} className="px-3 py-1.5 text-xs bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 cursor-pointer whitespace-nowrap">
+          <i className="ri-search-line mr-1"/>Buscar
+        </button>
+        {isFiltered && <button onClick={clearSearch} className="px-2 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer" title="Limpiar filtro">
+          <i className="ri-close-line"/>
+        </button>}
+      </div>
+      <span className="text-xs text-slate-400">
+        {isFiltered ? `${fmt(count)} resultado(s) · "${activeTerm}" en ${activeCol}` : `${fmt(count)} slots`} · Pág. {page + 1}/{Math.max(totalPages,1)}
+      </span>
       <div className="border border-slate-200 rounded-lg overflow-auto max-h-[55vh]">
         <table className="text-xs whitespace-nowrap w-full">
           <thead><tr className="bg-slate-50 sticky top-0 z-10">
