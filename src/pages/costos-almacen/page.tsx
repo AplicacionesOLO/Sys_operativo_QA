@@ -101,7 +101,7 @@ function RawTable({ tab }: { tab: 'inventario' | 'volumetria' }) {
     let q = supabase.from(TABLE).select('id, raw_data', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(p * PAGE, (p + 1) * PAGE - 1);
-    if (col && term) q = (q as any).filter(`raw_data->>'${col}'`, 'ilike', `%${term}%`);
+    if (col && term) q = (q as any).contains('raw_data', { [col]: term });
     const { data, count: c } = await q;
     if (data) {
       setRows(data as any[]); setCount(c ?? 0);
