@@ -291,8 +291,21 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
           supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999),
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
+        // Aggregate by zona+tipo only — dimension is not part of the formula config
         const tdMap: Record<string, any> = {};
-        for (const td of (tdData ?? []) as any[]) { const k=`${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}|${td.dimension??''}`; tdMap[k]={total:Number(td.total)||0,libres:Number(td.libres)||0,bloqueados:Number(td.bloqueados)||0,reservados:Number(td.reservados)||0,otros:Number(td.otros)||0,zona_total:Number(td.zona_total)||0,pct_zona:Number(td.pct_zona)||0,pct_libres:Number(td.pct_libres)||0}; }
+        for (const td of (tdData ?? []) as any[]) {
+          const k = `${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}`;
+          if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:Number(td.zona_total)||0, pct_zona:0, pct_libres:0 };
+          tdMap[k].total      += Number(td.total)||0;
+          tdMap[k].libres     += Number(td.libres)||0;
+          tdMap[k].bloqueados += Number(td.bloqueados)||0;
+          tdMap[k].reservados += Number(td.reservados)||0;
+          tdMap[k].otros      += Number(td.otros)||0;
+        }
+        for (const v of Object.values(tdMap) as any[]) {
+          v.pct_zona   = v.zona_total > 0 ? (v.total  / v.zona_total) * 100 : 0;
+          v.pct_libres = v.total      > 0 ? (v.libres / v.total)      * 100 : 0;
+        }
         setSlotTdMap(tdMap);
         const rawCols = ((slotCols ?? []) as any[]).filter((c:any)=>c.formula?.trim()).map((c:any)=>({id:String(c.id),nombre:String(c.nombre),formula:String(c.formula),zona:String(c.zona??''),tipo:String(c.tipo??'')}));
         setSlotRawCols(rawCols);
@@ -315,9 +328,9 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     const cosMap: Record<string, Record<string, number>> = {};
     const dbgMap: Record<string, string> = {};
     for (const [ubic, st] of Object.entries(slotStats)) {
-      const td = slotTdMap[`${st.zona_almacenaje}|${st.tipo_ubicacion}|${st.dimension}`];
+      const td = slotTdMap[`${st.zona_almacenaje}|${st.tipo_ubicacion}`];
       if (!td) {
-        dbgMap[ubic] = `Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'} | Dim: ${st.dimension||'—'}\n⚠ Sin estadísticas para esta combinación en fn_slot_tipo_dim_stats.\nVerifica que la zona y tipo existan en Conteo de Slots.`;
+        dbgMap[ubic] = `Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'}\n⚠ No hay slots registrados para este tipo en esta zona.\nVerifica que el tipo "${st.tipo_ubicacion||'—'}" exista en Conteo de Slots para la zona "${st.zona_almacenaje||'—'}".`;
         continue;
       }
       const vm = { TOTAL:td.total,LIBRES:td.libres,BLOQUEADOS:td.bloqueados,RESERVADOS:td.reservados,OTROS:td.otros,ZONA_TOTAL:td.zona_total,PCT_ZONA:td.pct_zona,PCT_LIBRES:td.pct_libres, TOTAL_TIPO:td.total,LIBRES_TIPO:td.libres,BLOQUEADOS_TIPO:td.bloqueados,RESERVADOS_TIPO:td.reservados,OTROS_TIPO:td.otros,PCT_TIPO_ZONA:td.pct_zona,PCT_LIBRES_TIPO:td.pct_libres,...systemVarMap_sc };
