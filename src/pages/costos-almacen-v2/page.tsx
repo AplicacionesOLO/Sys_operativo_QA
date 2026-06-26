@@ -138,9 +138,9 @@ export default function CostosAlmacenV2Page() {
     const { data, error } = await supabase.rpc('fn_v2_zona_stats', { p_zona_col: cfg.zonaCol });
 
     if (!error && Array.isArray(data) && data.length > 0) {
-      // Normalize zone strings: uppercase + collapse spaces
+      // Keep raw zone strings — normZona is applied only for display/comparison, not for storage
       setZonaStats((data as { zona: string; row_count: number }[]).map(r => ({
-        zona: normZona(r.zona), row_count: r.row_count,
+        zona: r.zona, row_count: r.row_count,
       })));
       setLoadingStats(false);
       return;
@@ -156,7 +156,7 @@ export default function CostosAlmacenV2Page() {
         .range(from, from + 9999);
       if (!batch || batch.length === 0) break;
       for (const r of batch as { raw_data: Record<string, unknown> }[]) {
-        const z = normZona(String(r.raw_data?.[cfg.zonaCol] ?? ''));
+        const z = String(r.raw_data?.[cfg.zonaCol] ?? '').trim();
         if (z) counts[z] = (counts[z] ?? 0) + 1;
       }
       if (batch.length < 10000) break;
@@ -176,12 +176,18 @@ export default function CostosAlmacenV2Page() {
   }, [colConfig, loadZonaStats]);
 
   // ── Derived zone lists ────────────────────────────────────────────────────
+  // allZonas holds the RAW zone strings as they appear in the data (needed for exact RPC queries)
   const allZonas = useMemo(() => zonaStats.map(s => s.zona), [zonaStats]);
 
   const activeZonas = useMemo<string[]>(() => {
-    if (activeSel.type === 'all')     return allZonas;
-    if (activeSel.type === 'zone')    return [activeSel.zona];
-    if (activeSel.type === 'cluster') return activeSel.cluster.zonas;
+    if (activeSel.type === 'all')  return allZonas;
+    if (activeSel.type === 'zone') return [activeSel.zona];
+    if (activeSel.type === 'cluster') {
+      // Cluster zonas stored in DB may differ in spacing/case from zonaStats raw values.
+      // Use normZona to match stored cluster zones against actual raw zones in the data.
+      const clNorms = new Set(activeSel.cluster.zonas.map(z => normZona(z)));
+      return allZonas.filter(z => clNorms.has(normZona(z)));
+    }
     return [];
   }, [activeSel, allZonas]);
 
@@ -497,10 +503,18 @@ export default function CostosAlmacenV2Page() {
   }, [filteredRows, sortColId, sortDir, colConfig, slotCostByUbic]);
 
   // ── Cluster / zone helpers ────────────────────────────────────────────────
-  const clusteredZonaSet = useMemo(() => new Set(clusters.flatMap(c => c.zonas)), [clusters]);
-  const unclusteredZonas = useMemo(() => allZonas.filter(z => !clusteredZonaSet.has(z)), [allZonas, clusteredZonaSet]);
+  // Use normZona for membership checks so stored cluster zones (which may have different
+  // spacing) still match raw zones from zonaStats
+  const clusteredZonaSet = useMemo(
+    () => new Set(clusters.flatMap(c => c.zonas.map(z => normZona(z)))),
+    [clusters],
+  );
+  const unclusteredZonas = useMemo(
+    () => allZonas.filter(z => !clusteredZonaSet.has(normZona(z))),
+    [allZonas, clusteredZonaSet],
+  );
   const zoneCount = (zonas: string[]) =>
-    zonas.reduce((s, z) => s + (zonaStats.find(r => r.zona === z)?.row_count ?? 0), 0);
+    zonas.reduce((s, z) => s + (zonaStats.find(r => normZona(r.zona) === normZona(z))?.row_count ?? 0), 0);
   const totalRows = zonaStats.reduce((s, r) => s + r.row_count, 0);
 
   // ── Pagination ────────────────────────────────────────────────────────────
