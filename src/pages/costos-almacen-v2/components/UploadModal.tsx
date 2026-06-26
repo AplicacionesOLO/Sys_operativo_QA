@@ -130,8 +130,8 @@ export default function V2UploadModal({ onClose, onSuccess }: Props) {
   }, [processFile]);
 
   const handleUpload = async () => {
-    if (!zonaCol || !tipoCol || !ubicacionCol || !articuloCol) {
-      setError('Zona, Tipo, Ubicación y Artículo son obligatorios');
+    if (!zonaCol || !tipoCol || !ubicacionCol) {
+      setError('Zona, Tipo y Ubicación son obligatorios');
       return;
     }
     setStep('uploading'); setError('');
@@ -162,7 +162,7 @@ export default function V2UploadModal({ onClose, onSuccess }: Props) {
   };
 
   const coreCols = new Set([zonaCol, tipoCol, ubicacionCol, articuloCol, companiaCol, descripcionCol].filter(Boolean));
-  const requiredMapped = !!(zonaCol && tipoCol && ubicacionCol && articuloCol);
+  const requiredMapped = !!(zonaCol && tipoCol && ubicacionCol);
 
   const ColSelect = ({ label, value, onChange, required }: { label: string; value: string; onChange: (v: string) => void; required?: boolean }) => (
     <div className="flex flex-col gap-1">
@@ -227,7 +227,7 @@ export default function V2UploadModal({ onClose, onSuccess }: Props) {
                   <ColSelect label="Zona Almacenaje" value={zonaCol} onChange={setZonaCol} required />
                   <ColSelect label="Tipo Ubicación" value={tipoCol} onChange={setTipoCol} required />
                   <ColSelect label="Ubicación" value={ubicacionCol} onChange={setUbicacionCol} required />
-                  <ColSelect label="Artículo / SKU" value={articuloCol} onChange={setArticuloCol} required />
+                  <ColSelect label="Artículo / SKU" value={articuloCol} onChange={setArticuloCol} />
                   <ColSelect label="Compañía / Cliente" value={companiaCol} onChange={setCompaniaCol} />
                   <ColSelect label="Descripción" value={descripcionCol} onChange={setDescripcionCol} />
                 </div>
