@@ -153,6 +153,9 @@ export default function V2UploadModal({ onClose, onSuccess }: Props) {
         totalRows,
       };
       localStorage.setItem(V2_COL_CONFIG_KEY, JSON.stringify(config));
+      // Persist to Supabase so config survives browser changes and redeployments
+      await supabase.from('costos_almacen_v2_config')
+        .upsert({ id: 'main', config, updated_at: new Date().toISOString() });
       setStep('done');
       onSuccess(config);
     } catch (err) {

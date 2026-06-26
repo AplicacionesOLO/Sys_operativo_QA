@@ -359,8 +359,22 @@ export default function CostosAlmacenV2Page() {
 
   // ── Init ─────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const raw = localStorage.getItem(V2_COL_CONFIG_KEY);
-    if (raw) { try { setColConfig(JSON.parse(raw)); } catch {} }
+    // Load colConfig: Supabase first (persists across browsers/redeploys),
+    // fall back to localStorage for users who haven't re-uploaded yet.
+    supabase.from('costos_almacen_v2_config').select('config').eq('id', 'main').maybeSingle()
+      .then(({ data }) => {
+        if (data?.config) {
+          setColConfig(data.config as ColConfig);
+          localStorage.setItem(V2_COL_CONFIG_KEY, JSON.stringify(data.config));
+        } else {
+          const raw = localStorage.getItem(V2_COL_CONFIG_KEY);
+          if (raw) { try { setColConfig(JSON.parse(raw)); } catch {} }
+        }
+      })
+      .catch(() => {
+        const raw = localStorage.getItem(V2_COL_CONFIG_KEY);
+        if (raw) { try { setColConfig(JSON.parse(raw)); } catch {} }
+      });
     loadClusters();
     // Build FormulaContext so slot cost formulas can resolve COSTOS_* and FACTOR_* variables
     (async () => {
