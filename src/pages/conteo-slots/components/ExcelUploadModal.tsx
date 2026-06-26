@@ -1,9 +1,7 @@
 import { useState, useRef, useCallback, DragEvent } from 'react';
 import { supabase } from '@/lib/supabase';
-import { parseSlotsExcel, extractMonthYears, SLOTS_KEY_COLUMNS } from '@/lib/slotsMasivoExcelParser';
+import { parseSlotsExcel, SLOTS_KEY_COLUMNS } from '@/lib/slotsMasivoExcelParser';
 import type { MasivoParseResult } from '@/lib/slotsMasivoExcelParser';
-
-const MESES_ES = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
 interface Props { onClose: () => void; onSuccess: () => void; }
 type Step = 'select' | 'preview' | 'uploading' | 'done';
@@ -14,7 +12,6 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
   const [parsed, setParsed]       = useState<MasivoParseResult | null>(null);
   const [fileName, setFileName]   = useState('');
   const [uploadError, setUploadError] = useState('');
-  const [detectedMonths, setDetectedMonths] = useState<{ mes: number; anio: number }[]>([]);
   const [progress, setProgress]   = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -23,7 +20,6 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
     setFileName(file.name);
     const result = parseSlotsExcel(await file.arrayBuffer());
     setParsed(result);
-    if (result.batches.length > 0) setDetectedMonths(extractMonthYears(result.batches));
     setStep('preview');
   }, []);
 
@@ -36,21 +32,12 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
     if (!parsed || parsed.errors.length > 0 || parsed.totalRows === 0) return;
     setStep('uploading'); setUploadError('');
     try {
-      // Use the first detected period for ALL rows in the batch so every record gets
-      // the same mes/anio. Per-row extraction creates mixed batches (some mes=null,
-      // some mes=specific) that cause the slot detail list to miss date-tagged records.
-      const batchMes = detectedMonths.length > 0 ? detectedMonths[0].mes : null;
-      const batchAnio = detectedMonths.length > 0 ? detectedMonths[0].anio : null;
+      setProgress('Limpiando datos anteriores...');
+      await supabase.from('conteo_slots_raw').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 
-      if (detectedMonths.length > 0) {
-        setProgress('Eliminando registros del mismo período...');
-        for (const { mes, anio } of detectedMonths) {
-          await supabase.from('conteo_slots_raw').delete().eq('mes', mes).eq('anio', anio);
-        }
-      }
       for (let i = 0; i < parsed.batches.length; i++) {
         setProgress(`Subiendo lote ${i + 1} de ${parsed.batches.length}...`);
-        const rows = parsed.batches[i].map(raw => ({ raw_data: raw, mes: batchMes, anio: batchAnio }));
+        const rows = parsed.batches[i].map(raw => ({ raw_data: raw, mes: null, anio: null }));
         const { error } = await supabase.from('conteo_slots_raw').insert(rows);
         if (error) throw new Error(`Error en lote ${i + 1}: ${error.message}`);
       }
@@ -69,7 +56,7 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
         <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <div>
             <h2 className="text-base font-semibold text-slate-800">Cargar datos — Conteo de Slots</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Carga el Excel de slots. Si hay datos del mismo período, se reemplazarán.</p>
+            <p className="text-xs text-slate-400 mt-0.5">Reemplaza todos los datos existentes con los del nuevo archivo.</p>
           </div>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 cursor-pointer"><i className="ri-close-line text-lg" /></button>
         </div>
@@ -88,17 +75,15 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
               {hasErrors && <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">{parsed?.errors.map((e, i) => <p key={i} className="text-xs text-rose-600">{e}</p>)}</div>}
               {!hasErrors && parsed && (
                 <div className="space-y-3">
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-start gap-2">
+                    <i className="ri-alert-line text-amber-500 mt-0.5 flex-shrink-0"/>
+                    <p className="text-xs text-amber-700">La carga <strong>reemplaza todos los datos existentes</strong>. Los datos anteriores serán eliminados antes de insertar los nuevos.</p>
+                  </div>
                   <div className="grid grid-cols-3 gap-3">
                     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center"><p className="text-xl font-bold text-slate-700">{parsed.totalRows.toLocaleString('es-CO')}</p><p className="text-xs text-slate-500">Slots</p></div>
                     <div className="bg-cyan-50 border border-cyan-100 rounded-lg p-3 text-center"><p className="text-xl font-bold text-cyan-700">{parsed.headers.length}</p><p className="text-xs text-cyan-600">Columnas</p></div>
                     <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-center"><p className="text-xl font-bold text-amber-700">{parsed.batches.length}</p><p className="text-xs text-amber-600">Lotes</p></div>
                   </div>
-                  {detectedMonths.length > 0 && (
-                    <div className="bg-cyan-50 border border-cyan-200 rounded-lg px-4 py-3">
-                      <p className="text-xs font-semibold text-cyan-800 mb-2"><i className="ri-calendar-check-line mr-1" />Períodos detectados ({detectedMonths.length})</p>
-                      <div className="flex flex-wrap gap-1.5">{detectedMonths.map(({ mes, anio }) => <span key={`${anio}-${mes}`} className="px-2.5 py-1 bg-white border border-cyan-200 text-cyan-700 text-xs rounded-full font-medium">{MESES_ES[mes]} {anio}</span>)}</div>
-                    </div>
-                  )}
                   <div>
                     <p className="text-xs font-medium text-slate-500 mb-1.5">Columnas detectadas — en azul las clave:</p>
                     <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">{parsed.headers.map(h => <span key={h} className={`px-2 py-0.5 text-xs rounded-full whitespace-nowrap ${SLOTS_KEY_COLUMNS.includes(h) ? 'bg-cyan-100 text-cyan-700 font-medium border border-cyan-200' : 'bg-slate-100 text-slate-600'}`}>{h}</span>)}</div>
@@ -126,7 +111,7 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
         <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3 flex-shrink-0">
           <input ref={inputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) processFile(f); }} />
           {step === 'select' && <><button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer">Cancelar</button><button onClick={() => inputRef.current?.click()} className="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 text-white text-sm font-medium rounded-lg cursor-pointer">Seleccionar archivo</button></>}
-          {step === 'preview' && <><button onClick={() => { setParsed(null); setFileName(''); setUploadError(''); setDetectedMonths([]); setStep('select'); }} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer">Cambiar archivo</button><button disabled={hasErrors} onClick={handleUpload} className="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:opacity-40 text-white text-sm font-medium rounded-lg cursor-pointer">Confirmar y subir</button></>}
+          {step === 'preview' && <><button onClick={() => { setParsed(null); setFileName(''); setUploadError(''); setStep('select'); }} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer">Cambiar archivo</button><button disabled={hasErrors} onClick={handleUpload} className="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:opacity-40 text-white text-sm font-medium rounded-lg cursor-pointer">Confirmar y subir</button></>}
           {step === 'done' && <button onClick={() => { onSuccess(); onClose(); }} className="ml-auto px-5 py-2 bg-cyan-500 hover:bg-cyan-600 text-white text-sm font-medium rounded-lg cursor-pointer">Ver datos</button>}
         </div>
       </div>
