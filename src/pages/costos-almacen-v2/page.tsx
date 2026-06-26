@@ -141,7 +141,7 @@ export default function CostosAlmacenV2Page() {
       for (const td of tdRows) {
         const sz  = String(td.zona_almacenaje ?? td.zona ?? (slotZonas.length === 1 ? slotZonas[0] : ''));
         const iz  = slotToInv[sz] ?? sz;
-        const k   = `${iz}|${td.tipo_ubicacion ?? ''}`;
+        const k   = `${iz}|${String(td.tipo_ubicacion ?? '').trim().toUpperCase()}`;
         if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
         tdMap[k].total      += Number(td.total)      || 0;
         tdMap[k].libres     += Number(td.libres)     || 0;
@@ -167,12 +167,14 @@ export default function CostosAlmacenV2Page() {
   // ── Slot cost per (zona, tipo) ────────────────────────────────────────
   useEffect(() => {
     if (!slotCostCols.length || !Object.keys(slotTdMap).length || !colConfig) { setZonaCostMap({}); return; }
-    const zonaMatch = (colZ: string, ubZ: string) => colZ === ubZ || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
+    const normZ = (s: string) => s.trim().replace(/\s+/g, '').toUpperCase();
+    const zonaMatch = (colZ: string, ubZ: string) =>
+      colZ === ubZ || normZ(colZ) === normZ(ubZ) || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
     const costMap: Record<string, Record<string, number>> = {};
     const seen = new Set<string>();
     for (const row of activeRows) {
       const zona = String(row[colConfig.zonaCol] ?? '').trim();
-      const tipo = String(row[colConfig.tipoCol] ?? '').trim();
+      const tipo = String(row[colConfig.tipoCol] ?? '').trim().toUpperCase(); // normalize for slotTdMap key
       const key  = `${zona}|${tipo}`;
       if (seen.has(key)) continue; seen.add(key);
       const td = slotTdMap[key]; if (!td) continue;
@@ -183,9 +185,9 @@ export default function CostosAlmacenV2Page() {
       for (const col of slotCostCols) {
         if (seenCol.has(col.nombre)) continue; seenCol.add(col.nombre);
         const best =
-          slotCostCols.find(c => c.nombre === col.nombre && c.tipo === tipo && zonaMatch(c.zona, zona)) ??
+          slotCostCols.find(c => c.nombre === col.nombre && c.tipo.toUpperCase() === tipo && zonaMatch(c.zona, zona)) ??
           slotCostCols.find(c => c.nombre === col.nombre && !c.tipo && zonaMatch(c.zona, zona)) ??
-          slotCostCols.find(c => c.nombre === col.nombre && c.tipo === tipo) ??
+          slotCostCols.find(c => c.nombre === col.nombre && c.tipo.toUpperCase() === tipo) ??
           slotCostCols.find(c => c.nombre === col.nombre && !c.tipo);
         if (!best) continue;
         const res = evalFormula(best.formula, vm);
@@ -433,7 +435,7 @@ export default function CostosAlmacenV2Page() {
                     {paginatedRows.map((row, i) => {
                       const zona  = String(row[colConfig.zonaCol] ?? '').trim();
                       const tipo  = String(row[colConfig.tipoCol] ?? '').trim();
-                      const costs = zonaCostMap[`${zona}|${tipo}`] ?? {};
+                      const costs = zonaCostMap[`${zona}|${tipo.toUpperCase()}`] ?? {};
                       return (
                         <tr key={i} className={`border-b border-slate-100 hover:bg-teal-50/40 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'}`}>
                           <td className="px-3 py-2 font-mono text-xs text-slate-700 whitespace-nowrap">
