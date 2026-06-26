@@ -23,6 +23,7 @@ import CostosMovimientosPage from '@/pages/costos-movimientos/page';
 import ConteoSlotsPage from '@/pages/conteo-slots/page';
 import CostoZonaPickingPage from '@/pages/zona-picking/page';
 import CostosAlmacenPage from '@/pages/costos-almacen/page';
+import CostosAlmacenV2Page from '@/pages/costos-almacen-v2/page';
 import ProtectedRoute from '@/components/feature/ProtectedRoute';
 
 const routes: RouteObject[] = [
@@ -48,6 +49,7 @@ const routes: RouteObject[] = [
   { path: '/conteo-slots', element: <ProtectedRoute moduleKey="costos"><ConteoSlotsPage /></ProtectedRoute> },
   { path: '/zona-picking', element: <ProtectedRoute moduleKey="costos"><CostoZonaPickingPage /></ProtectedRoute> },
   { path: '/costos-almacen', element: <ProtectedRoute moduleKey="costos"><CostosAlmacenPage /></ProtectedRoute> },
+  { path: '/costos-almacen-v2', element: <ProtectedRoute moduleKey="costos"><CostosAlmacenV2Page /></ProtectedRoute> },
   { path: '/bitacora', element: <ProtectedRoute><BitacoraPage /></ProtectedRoute> },
   { path: '*', element: <NotFound /> },
 ];
