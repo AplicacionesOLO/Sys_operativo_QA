@@ -786,42 +786,30 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
       setSlotTotal(Number(st.total) || 0);
 
-      // Load the most recent rows with NO SQL filter — avoids two sources of failure:
-      // (1) exact zone-string match breaks when cluster was built from older data,
-      // (2) 'Tipo Ubicación' key has ó which may be NFC vs NFD depending on the
-      //     Excel source, making server-side JSONB @> unreliable.
-      // All filtering is done client-side after building a normalized key map.
-      const { data: rawAll } = await supabase
-        .from('conteo_slots_raw')
-        .select('id, raw_data')
-        .order('created_at', { ascending: false })
-        .range(0, 49999);
+      // Query per zone — 'Zona Almacenaje' has no accented chars so exact JSONB
+      // @> is reliable. Tipo filter also included; if a zone returns 0 rows we
+      // fall back below via the allRaw flatMap.
+      const zoneQueries = zonas.map(zona =>
+        supabase.from('conteo_slots_raw')
+          .select('id, raw_data')
+          .contains('raw_data', { 'Zona Almacenaje': zona, 'Tipo Ubicación': selectedTipo })
+          .range(0, 49999)
+      );
+      const zoneResults = await Promise.all(zoneQueries);
+      const allRaw = zoneResults.flatMap(({ data }) => (data ?? []) as any[]);
 
-      const rows = (rawAll ?? []) as any[];
-      if (!rows.length) { setSlotLoading(false); return; }
+      if (!allRaw.length) { setSlotLoading(false); return; }
 
-      // Strip combining diacritics (U+0300–U+036F) via charCode to avoid
-      // regex literal Unicode issues in source files.
+      // Build a key map from the first row so field extraction works regardless
+      // of NFC/NFD encoding of accented column names in the source Excel.
+      // charCode filter is used instead of a regex literal to avoid source-file
+      // Unicode corruption (combining chars U+0300–U+036F).
       const norm = (s: string) => s.normalize('NFD').split('').filter(c => { const cc = c.charCodeAt(0); return cc < 0x0300 || cc > 0x036f; }).join('').toLowerCase().trim();
-
-      // Build key map from first row: normalized_name → actual stored key
       const keyMap: Record<string, string> = {};
-      for (const k of Object.keys(rows[0].raw_data ?? {})) keyMap[norm(k)] = k;
+      for (const k of Object.keys(allRaw[0].raw_data ?? {})) keyMap[norm(k)] = k;
       const get = (d: Record<string, unknown>, nk: string) => d[keyMap[nk]];
 
-      // Zone code matching — extract leading code (e.g. 'ZA15') from any format:
-      //   'ZA15' → 'za15'   'ZA15 - ZONA ALMACENAJE...' → 'za15'
-      const zonaCodes = new Set(zonas.map(z => z.trim().split(/[\s\-]+/)[0].toLowerCase()));
-      const matchesZone = (rawZona: string) =>
-        zonaCodes.has(rawZona.trim().split(/[\s\-]+/)[0].toLowerCase());
-
-      // Filter by zone code AND tipo (both normalized)
-      const tipoNorm = norm(selectedTipo);
-      const filtered = rows.filter(r => {
-        const d = r.raw_data ?? {};
-        return matchesZone(String(get(d, 'zona almacenaje') ?? '')) &&
-          norm(String(get(d, 'tipo ubicacion') ?? '')) === tipoNorm;
-      });
+      const filtered = allRaw;
 
       const mapped: SlotRow[] = filtered.map(r => {
         const d: Record<string, unknown> = r.raw_data ?? {};
