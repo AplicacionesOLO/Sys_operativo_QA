@@ -126,8 +126,33 @@ export default function CostosAlmacenV2Page() {
     const raw = localStorage.getItem(V2_COL_CONFIG_KEY);
     if (raw) { try { setColConfig(JSON.parse(raw)); } catch {} }
     loadClusters();
-    // Load system variables needed by slot cost formulas
-    fetchBaseQueryData().then(d => { if (d) setFormulaCtx(d); }).catch(() => {});
+    // Build FormulaContext so slot cost formulas can resolve COSTOS_* and FACTOR_* variables
+    (async () => {
+      try {
+        const [base, { data: cosColData }, { data: cosFilData }] = await Promise.all([
+          fetchBaseQueryData(),
+          supabase.from('costos_columnas').select('*').order('orden'),
+          supabase.from('costos_operacion').select('*').order('orden'),
+        ]);
+        const ctx: FormulaContext = {
+          inversiones:     (base.invData        ?? []) as FormulaContext['inversiones'],
+          gastosColumnas:  (base.gastosColData   ?? []) as FormulaContext['gastosColumnas'],
+          gastosFilas:     (base.gastosFilData   ?? []) as FormulaContext['gastosFilas'],
+          areaDistribucion:(base.areaDistribData ?? []) as FormulaContext['areaDistribucion'],
+          manoObraColumnas:(base.moColData       ?? []) as FormulaContext['manoObraColumnas'],
+          manoObraFilas:   (base.moFilData       ?? []) as FormulaContext['manoObraFilas'],
+          manoObraEmpleados:(base.empData        ?? []) as FormulaContext['manoObraEmpleados'],
+          volumenesColumnas:(base.volColData     ?? []) as FormulaContext['volumenesColumnas'],
+          volumenesFilas:  (base.volFilData      ?? []) as FormulaContext['volumenesFilas'],
+          costosColumnas:  (cosColData           ?? []) as FormulaContext['costosColumnas'],
+          costosFilas:     (cosFilData           ?? []) as FormulaContext['costosFilas'],
+          areasData:       (base.areasData       ?? []) as FormulaContext['areasData'],
+          volDistribucion: (base.volDistData     ?? []) as FormulaContext['volDistribucion'],
+          factores:        (base.factoresData    ?? []) as FormulaContext['factores'],
+        };
+        setFormulaCtx(ctx);
+      } catch {}
+    })();
   }, [loadClusters]);
 
   // ── Zone stats (with fallback) ────────────────────────────────────────────
@@ -243,19 +268,26 @@ export default function CostosAlmacenV2Page() {
     }
     const slotZonas = [...slotZonaSet];
 
-    // 5. Load aggregate stats + formula columns
-    const [{ data: tdJson }, { data: slotCols }] = await Promise.all([
-      slotZonas.length > 1
-        ? supabase.rpc('fn_slots_zonas_tipo_resumen_all', { p_zonas: slotZonas })
-        : supabase.rpc('fn_slots_zona_tipo_resumen_all', { p_zona: slotZonas[0] }),
+    // 5. Load aggregate stats per slot zone + formula columns in parallel.
+    // fn_slots_zonas_tipo_resumen_all (multi-zone variant) does NOT include a zona field
+    // in its output, so we call the single-zone function per zone and tag each result with
+    // the zone we requested — this guarantees correct tdMap keys regardless of zone count.
+    const [tdResults, { data: slotCols }] = await Promise.all([
+      Promise.all(
+        slotZonas.map(sz =>
+          supabase
+            .rpc('fn_slots_zona_tipo_resumen_all', { p_zona: sz })
+            .then(r => ({ zona: sz, rows: Array.isArray(r.data) ? r.data as Record<string, unknown>[] : [] }))
+        )
+      ),
       supabase
         .from('costos_slots_tipo_columnas')
         .select('nombre, formula, zona, tipo')
         .not('formula', 'is', null),
     ]);
 
-    const tdRows: Record<string, unknown>[] = Array.isArray(tdJson) ? tdJson : [];
-    if (!tdRows.length) {
+    const hasAnyData = tdResults.some(r => r.rows.length > 0);
+    if (!hasAnyData) {
       setSlotDiag(
         `Zonas del sistema de slots (${slotZonas.slice(0,3).join(', ')}) ` +
         `no tienen datos en Conteo de Slots.`,
@@ -270,16 +302,17 @@ export default function CostosAlmacenV2Page() {
       pct_zona: number; pct_libres: number;
     }> = {};
 
-    for (const td of tdRows) {
-      const sz = String(td.zona_almacenaje ?? td.zona ?? (slotZonas.length === 1 ? slotZonas[0] : ''));
-      const tp = String(td.tipo_ubicacion ?? '').trim().toUpperCase();
-      const k  = `${sz}|${tp}`;
-      if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
-      tdMap[k].total      += Number(td.total)      || 0;
-      tdMap[k].libres     += Number(td.libres)     || 0;
-      tdMap[k].bloqueados += Number(td.bloqueados) || 0;
-      tdMap[k].reservados += Number(td.reservados) || 0;
-      tdMap[k].otros      += Number(td.otros)      || 0;
+    for (const { zona: sz, rows } of tdResults) {
+      for (const td of rows) {
+        const tp = String(td.tipo_ubicacion ?? '').trim().toUpperCase();
+        const k  = `${sz}|${tp}`;
+        if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
+        tdMap[k].total      += Number(td.total)      || 0;
+        tdMap[k].libres     += Number(td.libres)     || 0;
+        tdMap[k].bloqueados += Number(td.bloqueados) || 0;
+        tdMap[k].reservados += Number(td.reservados) || 0;
+        tdMap[k].otros      += Number(td.otros)      || 0;
+      }
     }
     // Calc zona_total + pcts
     const zTot: Record<string, number> = {};
@@ -306,18 +339,25 @@ export default function CostosAlmacenV2Page() {
     }
 
     // 8. Compute cost per ubicacion
-    const normZM = (s: string) => s.trim().replace(/\s+/g, '').toUpperCase();
+    const normZM = (s: string) => String(s ?? '').trim().replace(/\s+/g, '').toUpperCase();
     const zonaMatch = (colZ: string, ubZ: string) =>
       colZ === ubZ || normZM(colZ) === normZM(ubZ) ||
       (colZ.startsWith('_cluster_') && normZM(colZ).includes(normZM(ubZ)));
+
+    // Pre-build normalized tdMap index for case/space tolerant lookup
+    const tdMapByNorm: Record<string, typeof tdMap[string]> = {};
+    for (const [k, v] of Object.entries(tdMap)) {
+      const [zona, tipo] = k.split('|');
+      tdMapByNorm[`${normZM(zona)}|${normZM(tipo)}`] = v;
+    }
 
     const costByUbic: Record<string, Record<string, number>> = {};
     let matchedCount = 0;
 
     for (const [normUbic, { zona: slotZona, tipo: slotTipo }] of Object.entries(ubicToSlot)) {
-      const tipoUp = slotTipo.toUpperCase();
-      const tdKey  = `${slotZona}|${tipoUp}`;
-      const td     = tdMap[tdKey];
+      const tipoUp = normZM(slotTipo);
+      // Use normalized lookup to tolerate case/space differences between VLOOKUP zona and RPC zona
+      const td = tdMapByNorm[`${normZM(slotZona)}|${tipoUp}`];
       if (!td) continue;
 
       const vm = {
@@ -330,8 +370,14 @@ export default function CostosAlmacenV2Page() {
         ZONA_TOTAL:  td.zona_total,
         PCT_ZONA:    td.pct_zona,
         PCT_LIBRES:  td.pct_libres,
-        TOTAL_TIPO:  td.total,
-        LIBRES_TIPO: td.libres,
+        // Alias variables used by Conteo de Slots tipo-level formulas
+        TOTAL_TIPO:       td.total,
+        LIBRES_TIPO:      td.libres,
+        BLOQUEADOS_TIPO:  td.bloqueados,
+        RESERVADOS_TIPO:  td.reservados,
+        OTROS_TIPO:       td.otros,
+        PCT_TIPO_ZONA:    td.pct_zona,
+        PCT_LIBRES_TIPO:  td.pct_libres,
       };
 
       costByUbic[normUbic] = {};
@@ -341,9 +387,9 @@ export default function CostosAlmacenV2Page() {
         if (seen.has(col.nombre)) continue;
         seen.add(col.nombre);
         const best =
-          rawCols.find(c => c.nombre === col.nombre && c.tipo.toUpperCase() === tipoUp && zonaMatch(c.zona, slotZona)) ??
+          rawCols.find(c => c.nombre === col.nombre && normZM(c.tipo) === tipoUp && zonaMatch(c.zona, slotZona)) ??
           rawCols.find(c => c.nombre === col.nombre && !c.tipo && zonaMatch(c.zona, slotZona)) ??
-          rawCols.find(c => c.nombre === col.nombre && c.tipo.toUpperCase() === tipoUp) ??
+          rawCols.find(c => c.nombre === col.nombre && normZM(c.tipo) === tipoUp) ??
           rawCols.find(c => c.nombre === col.nombre && !c.tipo);
         if (!best) continue;
         const res = evalFormula(best.formula, vm);

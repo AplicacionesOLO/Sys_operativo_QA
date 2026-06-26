@@ -221,8 +221,15 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     setRows([]); setAggRows([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null);
     setLoading(true);
     // Use JSON-returning functions — PostgREST max_rows does NOT apply to scalar/json returns
-    const rpcAll = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_all' : 'fn_almacen_inv_zona_all';
-    const rpcParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
+    // Normalize zone names from cluster to match the exact strings in zonaResumen (from the DB).
+    // This prevents mismatches when cluster stores "Originales" but DB has "ORIGINALES" or vice versa.
+    const matchedZonas = activeZonas.map(az => {
+      const normAz = az.trim().toUpperCase().replace(/\s+/g, '');
+      const match = zonaResumen.find(zr => zr.zona.trim().toUpperCase().replace(/\s+/g, '') === normAz);
+      return match?.zona ?? az;
+    });
+    const rpcAll = matchedZonas.length > 1 ? 'fn_almacen_inv_zonas_all' : 'fn_almacen_inv_zona_all';
+    const rpcParams = matchedZonas.length > 1 ? { p_zonas: matchedZonas } : { p_zona: matchedZonas[0] };
 
     (async () => {
       setLoadStep(`Cargando inventario (${fmt(expectedRows)} filas esperadas)...`);
