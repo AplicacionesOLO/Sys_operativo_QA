@@ -221,15 +221,8 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
     setRows([]); setAggRows([]); setVolMap({}); setPickingMatchMap({}); setPickingRpcOk(null);
     setLoading(true);
     // Use JSON-returning functions — PostgREST max_rows does NOT apply to scalar/json returns
-    // Normalize zone names from cluster to match the exact strings in zonaResumen (from the DB).
-    // This prevents mismatches when cluster stores "Originales" but DB has "ORIGINALES" or vice versa.
-    const matchedZonas = activeZonas.map(az => {
-      const normAz = az.trim().toUpperCase().replace(/\s+/g, '');
-      const match = zonaResumen.find(zr => zr.zona.trim().toUpperCase().replace(/\s+/g, '') === normAz);
-      return match?.zona ?? az;
-    });
-    const rpcAll = matchedZonas.length > 1 ? 'fn_almacen_inv_zonas_all' : 'fn_almacen_inv_zona_all';
-    const rpcParams = matchedZonas.length > 1 ? { p_zonas: matchedZonas } : { p_zona: matchedZonas[0] };
+    const rpcAll = activeZonas.length > 1 ? 'fn_almacen_inv_zonas_all' : 'fn_almacen_inv_zona_all';
+    const rpcParams = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
 
     (async () => {
       setLoadStep(`Cargando inventario (${fmt(expectedRows)} filas esperadas)...`);
@@ -914,7 +907,16 @@ export default function CostosAlmacenPage() {
   const isCluster = activeSelection.type === 'cluster';
   const activeZona = activeSelection.type === 'zone' ? activeSelection.zona : '';
   const activeCluster = activeSelection.type === 'cluster' ? activeSelection.cluster : null;
-  const activeZonas = isCluster ? (activeCluster?.zonas ?? []) : (activeZona ? [activeZona] : []);
+  // Normalize cluster zone names to match the exact strings in zonaResumen (from DB).
+  // This prevents mismatches when cluster stores "Originales" but DB has "ORIGINALES".
+  const activeZonas = useMemo(() => {
+    const raw = isCluster ? (activeCluster?.zonas ?? []) : (activeZona ? [activeZona] : []);
+    return raw.map(az => {
+      const normAz = az.trim().toUpperCase().replace(/\s+/g, '');
+      const match = zonaResumen.find(zr => zr.zona.trim().toUpperCase().replace(/\s+/g, '') === normAz);
+      return match?.zona ?? az;
+    });
+  }, [isCluster, activeCluster, activeZona, zonaResumen]);
   const zonaLabel = isCluster ? (activeCluster?.nombre ?? 'Cluster') : activeZona;
   // Sum of total_articulos (row count) for active zones — used by TablaDistribucion to parallelize fetching
   const expectedRows = useMemo(
