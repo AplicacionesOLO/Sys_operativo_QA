@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import AppLayout from '@/components/layout/AppLayout';
+import AppLayout from '@/components/feature/AppLayout';
 import { supabase } from '@/lib/supabase';
 import { evalFormula } from '@/lib/mathEvaluator';
 import { useZonaClusters } from '@/hooks/useZonaClusters';
