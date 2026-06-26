@@ -778,11 +778,11 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
     setSlotPage(0);
     const rpcName = zonas.length > 1 ? 'fn_slots_detalle_por_zonas_tipo' : 'fn_slots_detalle_por_tipo';
     const params = zonas.length > 1
-      ? { p_zonas: zonas, p_tipo: selectedTipo, p_offset: 0, p_limit: SLOT_PAGE }
-      : { p_zona: zonas[0], p_tipo: selectedTipo, p_offset: 0, p_limit: SLOT_PAGE };
+      ? { p_zonas: zonas, p_tipo: selectedTipo, p_offset: 0, p_limit: 50000 }
+      : { p_zona: zonas[0], p_tipo: selectedTipo, p_offset: 0, p_limit: 50000 };
 
     Promise.all([
-      supabase.rpc(rpcName, params),
+      supabase.rpc(rpcName, params).range(0, 49999),
       supabase.rpc('fn_slots_tipo_stats', { p_zonas: zonas, p_tipo: selectedTipo }),
     ]).then(([{ data: sData }, { data: stData }]) => {
       setSlots(((sData ?? []) as any[]).map((r: any) => ({
