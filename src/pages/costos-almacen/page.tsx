@@ -358,23 +358,47 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       if (Object.keys(sMap).length > 0) {
         setSlotStats(sMap);
 
-        const zonasAlm = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
-        const [{ data: tdData }, { data: slotCols }] = await Promise.all([
-          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999),
+        // Use the same JSON-returning RPCs as Costos por Slot "Por zona (formulas)".
+        // fn_slot_tipo_dim_stats has a mes IS NULL filter that returns 0 rows when the
+        // uploaded data has mes values set; these RPCs bypass that entirely.
+        // activeZonas contains the exact zone strings stored in conteo_slots_raw
+        // (they come from fn_slots_zona_resumen via the cluster config).
+        const rpcTipo = activeZonas.length > 1 ? 'fn_slots_zonas_tipo_resumen_all' : 'fn_slots_zona_tipo_resumen_all';
+        const paramsTipo = activeZonas.length > 1 ? { p_zonas: activeZonas } : { p_zona: activeZonas[0] };
+        // Normalize zone strings so inventory zones map correctly to slot zone keys
+        const normalizeZ = (s: string) => String(s).trim().replace(/\s+/g, '').toUpperCase();
+        const activeZoneMap: Record<string, string> = {};
+        for (const az of activeZonas) activeZoneMap[normalizeZ(az)] = az;
+        // Re-key sMap.zona_almacenaje to exact activeZonas string so tdMap lookups match
+        for (const v of Object.values(sMap) as any[]) {
+          v.zona_almacenaje = activeZoneMap[normalizeZ(v.zona_almacenaje)] ?? v.zona_almacenaje;
+        }
+        const [{ data: tdJson }, { data: slotCols }] = await Promise.all([
+          supabase.rpc(rpcTipo, paramsTipo),
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
-        // Aggregate by zona+tipo only — dimension is not part of the formula config
+        const tdRows: any[] = Array.isArray(tdJson) ? tdJson : [];
+        // Aggregate by zona+tipo (collapse dimensions); inject zone for single-zone RPC
         const tdMap: Record<string, any> = {};
-        for (const td of (tdData ?? []) as any[]) {
-          const k = `${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}`;
-          if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:Number(td.zona_total)||0, pct_zona:0, pct_libres:0 };
+        for (const td of tdRows) {
+          const zone = String(td.zona_almacenaje ?? td.zona ?? (activeZonas.length === 1 ? activeZonas[0] : ''));
+          const k = `${zone}|${td.tipo_ubicacion??''}`;
+          if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
           tdMap[k].total      += Number(td.total)||0;
           tdMap[k].libres     += Number(td.libres)||0;
           tdMap[k].bloqueados += Number(td.bloqueados)||0;
           tdMap[k].reservados += Number(td.reservados)||0;
           tdMap[k].otros      += Number(td.otros)||0;
         }
-        for (const v of Object.values(tdMap) as any[]) {
+        // Compute zona_total (sum of all tipos in the same zone) and derived pcts
+        const zTotal: Record<string, number> = {};
+        for (const [k, v] of Object.entries(tdMap) as any[]) {
+          const zone = (k as string).split('|')[0];
+          zTotal[zone] = (zTotal[zone] ?? 0) + v.total;
+        }
+        for (const [k, v] of Object.entries(tdMap) as any[]) {
+          const zone = (k as string).split('|')[0];
+          v.zona_total = zTotal[zone] ?? 0;
           v.pct_zona   = v.zona_total > 0 ? (v.total  / v.zona_total) * 100 : 0;
           v.pct_libres = v.total      > 0 ? (v.libres / v.total)      * 100 : 0;
         }
