@@ -3,14 +3,16 @@ import AppLayout from '@/components/feature/AppLayout';
 import { supabase } from '@/lib/supabase';
 import { evalFormula } from '@/lib/mathEvaluator';
 import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
-import { EMPTY_FORMULA_CTX, toAllDataSources } from '@/lib/formulaEngine';
 import type { FormulaContext } from '@/lib/formulaEngine';
-import { buildVariableDefs, buildVariableMap } from '@/lib/formulaVariables';
+import { EMPTY_FORMULA_CTX, toAllDataSources } from '@/lib/formulaEngine';
+import { buildVariableDefs, buildVariableMap, type VariableDef } from '@/lib/formulaVariables';
+import { downloadExcelMultiSheet } from '@/lib/csvExport';
 import { useZonaClusters } from '@/hooks/useZonaClusters';
 import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
 import V2UploadModal, { V2_COL_CONFIG_KEY } from './components/UploadModal';
 import type { ColConfig } from './components/UploadModal';
 import type { ZonaCluster } from '@/hooks/useZonaClusters';
+import ZonaCeldaFormulaEditor from './components/ZonaCeldaFormulaEditor';
 
 const CLUSTERS_TABLE = 'costos_almacen_v2_clusters';
 const COL_ORDER_KEY  = 'costos_almacen_v2_col_order';
@@ -76,6 +78,240 @@ function TH({
         <SortIcon active={active} dir={sortDir} />
       </span>
     </th>
+  );
+}
+
+// ── Pivot: Costo por Slot por Artículo ────────────────────────────────────────
+function ArticleSlotCostPivot({ rows, colConfig, slotCostByUbic, slotColNames, formulaCtx }: {
+  rows: Record<string, unknown>[];
+  colConfig: ColConfig;
+  slotCostByUbic: Record<string, Record<string, number>>;
+  slotColNames: string[];
+  formulaCtx: FormulaContext;
+}) {
+  const [pivotSearch, setPivotSearch] = useState('');
+  const [pivotSortKey, setPivotSortKey] = useState<string>('total');
+  const [pivotSortDir, setPivotSortDir] = useState<'asc' | 'desc'>('desc');
+  const [pivotPage, setPivotPage] = useState(0);
+  const PIVOT_PAGE_SIZE = 100;
+  const [dynCols, setDynCols] = useState<{ id: string; nombre: string; formula?: string; orden: number }[]>([]);
+  const [addingCol, setAddingCol] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [editingFormula, setEditingFormula] = useState<{
+    colId: string; colNombre: string; formula: string;
+    position: { top: number; left: number };
+    columnTokens: { token: string; label: string; value?: number }[];
+    enrichedVarMap: Record<string, number>;
+  } | null>(null);
+  const PIVOT_TABLE = 'costos_almacen_v2_pivot_columnas';
+
+  // System variables
+  const systemVarDefs = useMemo((): VariableDef[] => {
+    try { return buildVariableDefs(toAllDataSources(formulaCtx)); } catch { return []; }
+  }, [formulaCtx]);
+  const pivotSystemVarMap = useMemo((): Record<string, number> => {
+    if (!systemVarDefs.length) return {};
+    try { return buildVariableMap(systemVarDefs, toAllDataSources(formulaCtx)); } catch { return {}; }
+  }, [formulaCtx, systemVarDefs]);
+
+  useEffect(() => { supabase.from(PIVOT_TABLE).select('*').order('orden').then(({ data }) => { setDynCols((data ?? []) as typeof dynCols); }); }, []);
+
+  // Aggregate: article → { descripcion, ubics, costPerCol, totalCost }
+  const pivotData = useMemo(() => {
+    const acc: Record<string, { descripcion: string; ubics: Set<string>; costPerCol: Record<string, number>; totalCost: number }> = {};
+    for (const row of rows) {
+      const art = String(row[colConfig.articuloCol] ?? '').trim();
+      if (!art) continue;
+      const ubic = normId(String(row[colConfig.ubicacionCol] ?? ''));
+      const desc = colConfig.descripcionCol ? String(row[colConfig.descripcionCol] ?? '').trim() : '';
+      if (!acc[art]) acc[art] = { descripcion: desc, ubics: new Set(), costPerCol: {}, totalCost: 0 };
+      if (!acc[art].ubics.has(ubic)) {
+        acc[art].ubics.add(ubic);
+        const costs = slotCostByUbic[ubic];
+        if (costs) { for (const name of slotColNames) { const v = costs[name] ?? 0; acc[art].costPerCol[name] = (acc[art].costPerCol[name] ?? 0) + v; acc[art].totalCost += v; } }
+      }
+    }
+    return Object.entries(acc).map(([articulo, v]) => ({ articulo, descripcion: v.descripcion, ubicaciones: v.ubics.size, total: v.totalCost, costPerCol: v.costPerCol }));
+  }, [rows, colConfig, slotCostByUbic, slotColNames]);
+
+  const colNameToToken = useCallback((n: string) => n.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase(), []);
+  const buildRowVarMap = useCallback((row: typeof pivotData[0]) => {
+    const vm: Record<string, number> = { UBICACIONES: row.ubicaciones, TOTAL_COSTO_SLOT: row.total, ...pivotSystemVarMap };
+    for (const name of slotColNames) vm[`SLOT_${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}`] = row.costPerCol[name] ?? 0;
+    return vm;
+  }, [pivotSystemVarMap, slotColNames]);
+
+  // Compute dynamic columns
+  const computedCols = useMemo(() => {
+    const result: Record<string, Record<string, { value: number | null; error: boolean }>> = {};
+    const accum: Record<string, Record<string, number>> = {};
+    for (const r of pivotData) accum[r.articulo] = {};
+    for (const col of dynCols) {
+      result[col.id] = {};
+      const colToken = colNameToToken(col.nombre);
+      const formula = col.formula?.trim();
+      if (!formula) { for (const r of pivotData) { accum[r.articulo][colToken] = 0; result[col.id][r.articulo] = { value: null, error: false }; } continue; }
+      for (const r of pivotData) {
+        const varMap = { ...buildRowVarMap(r), ...accum[r.articulo] };
+        const ev = evalFormula(formula, varMap);
+        const val = ev.ok ? ev.value : null;
+        accum[r.articulo][colToken] = val ?? 0;
+        result[col.id][r.articulo] = { value: val, error: !ev.ok };
+      }
+    }
+    return result;
+  }, [pivotData, dynCols, buildRowVarMap, colNameToToken]);
+
+  const filtered = useMemo(() => {
+    if (!pivotSearch) return pivotData;
+    const q = pivotSearch.toLowerCase();
+    return pivotData.filter(r => r.articulo.toLowerCase().includes(q) || r.descripcion.toLowerCase().includes(q));
+  }, [pivotData, pivotSearch]);
+
+  const sorted = useMemo(() => {
+    const dir = pivotSortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      if (pivotSortKey === 'articulo') return a.articulo.localeCompare(b.articulo) * dir;
+      if (pivotSortKey === 'ubicaciones') return (a.ubicaciones - b.ubicaciones) * dir;
+      if (pivotSortKey === 'total') return (a.total - b.total) * dir;
+      return ((computedCols[pivotSortKey]?.[a.articulo]?.value ?? 0) - (computedCols[pivotSortKey]?.[b.articulo]?.value ?? 0)) * dir;
+    });
+  }, [filtered, pivotSortKey, pivotSortDir, computedCols]);
+
+  const totalPages = Math.ceil(sorted.length / PIVOT_PAGE_SIZE);
+  const paginated = sorted.slice(pivotPage * PIVOT_PAGE_SIZE, (pivotPage + 1) * PIVOT_PAGE_SIZE);
+  const toggleSort = (key: string) => { if (pivotSortKey === key) setPivotSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setPivotSortKey(key); setPivotSortDir('desc'); } setPivotPage(0); };
+  const sortIcon = (key: string) => pivotSortKey !== key ? 'ri-expand-up-down-line text-slate-300' : pivotSortDir === 'asc' ? 'ri-sort-asc text-teal-600' : 'ri-sort-desc text-teal-600';
+  const grandTotal = useMemo(() => pivotData.reduce((s, r) => s + r.total, 0), [pivotData]);
+
+  // Column CRUD
+  const handleAddCol = async () => { if (!newColName.trim()) return; const { data } = await supabase.from(PIVOT_TABLE).insert({ nombre: newColName.trim(), orden: dynCols.length }).select().maybeSingle(); if (data) setDynCols(prev => [...prev, data as typeof dynCols[0]]); setNewColName(''); setAddingCol(false); };
+  const handleDeleteCol = async (id: string) => { if (!confirm('¿Eliminar esta columna?')) return; await supabase.from(PIVOT_TABLE).delete().eq('id', id); setDynCols(prev => prev.filter(c => c.id !== id)); };
+  const handleSaveFormula = async (formula: string) => { if (!editingFormula) return; await supabase.from(PIVOT_TABLE).update({ formula: formula || null }).eq('id', editingFormula.colId); setDynCols(prev => prev.map(c => c.id === editingFormula.colId ? { ...c, formula: formula || undefined } : c)); setEditingFormula(null); };
+  const handleOpenFormulaEditor = (col: typeof dynCols[0], e: React.MouseEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const colIdx = dynCols.findIndex(c => c.id === col.id);
+    const prevCols = colIdx > 0 ? dynCols.slice(0, colIdx) : [];
+    const sampleRow = pivotData[0];
+    const prevColValues: Record<string, number> = {};
+    prevCols.forEach(pc => { if (sampleRow) { const v = computedCols[pc.id]?.[sampleRow.articulo]?.value; if (v != null) prevColValues[colNameToToken(pc.nombre)] = v; } });
+    const enrichedVarMap = sampleRow ? { ...buildRowVarMap(sampleRow), ...prevColValues } : { ...pivotSystemVarMap, ...prevColValues };
+
+    // Row-level tokens always visible: Total Costo × Slot and Ubicaciones per article
+    const rowTokens: { token: string; label: string; value?: number }[] = [
+      { token: 'TOTAL_COSTO_SLOT', label: 'Total Costo × Slot', value: sampleRow?.total },
+      { token: 'UBICACIONES',      label: 'Ubicaciones',         value: sampleRow?.ubicaciones },
+      // One token per slot cost column (e.g. SLOT_COSTO_POR_SLOT)
+      ...slotColNames.map(name => ({
+        token: `SLOT_${name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}`,
+        label: `Slot: ${name}`,
+        value: sampleRow?.costPerCol[name],
+      })),
+    ];
+
+    // Previous dynamic columns (can reference their computed value)
+    const prevColTokens = prevCols.map(pc => ({
+      token: colNameToToken(pc.nombre),
+      label: pc.nombre,
+      value: sampleRow ? (computedCols[pc.id]?.[sampleRow.articulo]?.value ?? undefined) : undefined,
+    }));
+
+    setEditingFormula({
+      colId: col.id, colNombre: col.nombre, formula: col.formula ?? '',
+      position: { top: rect.bottom + 4, left: rect.left },
+      columnTokens: [...rowTokens, ...prevColTokens],
+      enrichedVarMap,
+    });
+  };
+
+  // Excel export — ALL data
+  const handleExport = () => {
+    const fmtN = (n: number | null | undefined) => n != null ? Math.round(n * 10000) / 10000 : 0;
+    const headers = ['Artículo', 'Descripción', 'Ubicaciones', 'Total Costo × Slot', ...dynCols.map(c => c.nombre)];
+    const exportRows = sorted.map(r => [r.articulo, r.descripcion, r.ubicaciones, fmtN(r.total), ...dynCols.map(c => fmtN(computedCols[c.id]?.[r.articulo]?.value))]);
+    downloadExcelMultiSheet('costo_slot_por_articulo.xlsx', [{ name: 'Costo por Artículo', headers, rows: exportRows }]);
+  };
+
+  if (!pivotData.length) return null;
+
+  return (
+    <div className="flex-shrink-0 border-t border-slate-200 bg-white">
+      <div className="px-6 py-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Costo por Slot por Artículo</h3>
+            <p className="text-xs text-slate-400 mt-0.5">{fmt(pivotData.length)} artículos · Total: ${fmtUSD(grandTotal)}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <i className="ri-search-line text-sm text-slate-300 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input type="text" placeholder="Buscar artículo..." value={pivotSearch}
+                onChange={e => { setPivotSearch(e.target.value); setPivotPage(0); }}
+                className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg w-48 focus:ring-1 focus:ring-teal-200 focus:border-teal-300 outline-none" />
+            </div>
+            <button onClick={handleExport} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer"><i className="ri-download-2-line" /> Excel</button>
+          </div>
+        </div>
+        <div className="border border-slate-200 rounded-lg overflow-auto max-h-[50vh]">
+          <table className="text-xs whitespace-nowrap w-full">
+            <thead>
+              <tr className="bg-slate-50 sticky top-0 z-10">
+                <th onClick={() => toggleSort('articulo')} className="px-3 py-2.5 text-left text-slate-500 font-semibold cursor-pointer hover:bg-slate-100 select-none border-r border-slate-200">Artículo <i className={`${sortIcon('articulo')} ml-1`} /></th>
+                <th className="px-3 py-2.5 text-left text-slate-500 font-semibold border-r border-slate-200">Descripción</th>
+                <th onClick={() => toggleSort('ubicaciones')} className="px-3 py-2.5 text-right text-slate-500 font-semibold cursor-pointer hover:bg-slate-100 select-none border-r border-slate-200">Ubicaciones <i className={`${sortIcon('ubicaciones')} ml-1`} /></th>
+                <th onClick={() => toggleSort('total')} className="px-3 py-2.5 text-right text-slate-500 font-semibold cursor-pointer hover:bg-slate-100 select-none border-r border-slate-200">Total Costo × Slot <i className={`${sortIcon('total')} ml-1`} /></th>
+                {dynCols.map(col => (
+                  <th key={col.id} onClick={() => toggleSort(col.id)} className={`px-2 py-2.5 text-right font-semibold cursor-pointer hover:bg-slate-100 select-none border-r border-slate-200 ${col.formula ? 'bg-teal-50 text-teal-700' : 'text-slate-500'}`}>
+                    <div className="flex items-center justify-end gap-1">
+                      <span className="text-xs">{col.nombre}</span>
+                      {col.formula && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-200 text-teal-700 font-mono font-bold">fx</span>}
+                      <i className={`${sortIcon(col.id)} ml-0.5`} />
+                      <button onClick={e => { e.stopPropagation(); handleOpenFormulaEditor(col, e); }} className="w-4 h-4 flex items-center justify-center rounded text-slate-400 hover:text-teal-600 cursor-pointer"><i className="ri-pencil-line text-[10px]" /></button>
+                      <button onClick={e => { e.stopPropagation(); handleDeleteCol(col.id); }} className="w-4 h-4 flex items-center justify-center rounded text-slate-400 hover:text-rose-500 cursor-pointer"><i className="ri-close-line text-[10px]" /></button>
+                    </div>
+                  </th>
+                ))}
+                <th className="px-1 py-2.5 bg-slate-50">{addingCol ? <div className="flex items-center gap-1 px-1"><input type="text" value={newColName} onChange={e => setNewColName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleAddCol(); if (e.key === 'Escape') { setAddingCol(false); setNewColName(''); } }} placeholder="Nombre..." className="w-[100px] px-2 py-1 text-xs border border-teal-300 rounded-md focus:outline-none bg-white" autoFocus /><button onClick={handleAddCol} disabled={!newColName.trim()} className="w-5 h-5 flex items-center justify-center rounded bg-teal-500 text-white cursor-pointer disabled:opacity-50"><i className="ri-check-line text-[10px]" /></button><button onClick={() => { setAddingCol(false); setNewColName(''); }} className="w-5 h-5 flex items-center justify-center rounded text-slate-400 cursor-pointer"><i className="ri-close-line text-[10px]" /></button></div> : <button onClick={() => setAddingCol(true)} className="w-7 h-7 flex items-center justify-center rounded-lg border-2 border-dashed border-slate-300 text-slate-400 hover:border-teal-400 hover:text-teal-500 cursor-pointer" title="Agregar columna"><i className="ri-add-line text-sm" /></button>}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginated.map((r, i) => (
+                <tr key={r.articulo} className={`border-t border-slate-100 hover:bg-teal-50/40 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
+                  <td className="px-3 py-2 font-mono text-slate-800 font-medium border-r border-slate-100">{r.articulo}</td>
+                  <td className="px-3 py-2 text-slate-600 max-w-xs truncate border-r border-slate-100" title={r.descripcion}>{r.descripcion || '—'}</td>
+                  <td className="px-3 py-2 text-right text-slate-600 font-medium border-r border-slate-100">{r.ubicaciones}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-teal-700 border-r border-slate-100">${fmtUSD(r.total)}</td>
+                  {dynCols.map(col => { const cell = computedCols[col.id]?.[r.articulo]; return <td key={col.id} className={`px-3 py-2 text-right font-mono border-r border-slate-100 ${cell?.error ? 'text-rose-500' : cell?.value != null ? 'text-teal-700 font-semibold' : 'text-slate-300'}`}>{cell?.value != null ? fmtUSD(cell.value) : '—'}</td>; })}
+                  <td />
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-slate-50 border-t-2 border-slate-200 sticky bottom-0">
+                <td className="px-3 py-2.5 font-semibold text-slate-700 border-r border-slate-200">Total</td>
+                <td className="px-3 py-2.5 text-slate-400 text-xs border-r border-slate-200">{fmt(filtered.length)} artículos</td>
+                <td className="px-3 py-2.5 text-right font-semibold text-slate-700 border-r border-slate-200">{fmt(filtered.reduce((s, r) => s + r.ubicaciones, 0))}</td>
+                <td className="px-3 py-2.5 text-right font-mono font-bold text-teal-800 border-r border-slate-200">${fmtUSD(filtered.reduce((s, r) => s + r.total, 0))}</td>
+                {dynCols.map(col => { const sum = filtered.reduce((s, r) => s + (computedCols[col.id]?.[r.articulo]?.value ?? 0), 0); return <td key={col.id} className="px-3 py-2.5 text-right font-mono font-bold text-teal-800 border-r border-slate-200">{fmtUSD(sum)}</td>; })}
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2 mt-2">
+            <button disabled={pivotPage === 0} onClick={() => setPivotPage(p => p - 1)}
+              className="px-2.5 py-1 text-xs border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-40 cursor-pointer">← Ant.</button>
+            <span className="text-xs text-slate-400">{pivotPage + 1}/{totalPages}</span>
+            <button disabled={pivotPage >= totalPages - 1} onClick={() => setPivotPage(p => p + 1)}
+              className="px-2.5 py-1 text-xs border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-40 cursor-pointer">Sig. →</button>
+          </div>
+        )}
+      </div>
+      {editingFormula && (
+        <ZonaCeldaFormulaEditor formula={editingFormula.formula} varMap={editingFormula.enrichedVarMap} onSave={handleSaveFormula} onCancel={() => setEditingFormula(null)} position={editingFormula.position} systemVarDefs={systemVarDefs} systemVarMap={pivotSystemVarMap} columnTokens={editingFormula.columnTokens} />
+      )}
+    </div>
   );
 }
 
@@ -163,32 +399,40 @@ export default function CostosAlmacenV2Page() {
     const { data, error } = await supabase.rpc('fn_v2_zona_stats', { p_zona_col: cfg.zonaCol });
 
     if (!error && Array.isArray(data) && data.length > 0) {
-      // Keep raw zone strings — normZona is applied only for display/comparison, not for storage
-      setZonaStats((data as { zona: string; row_count: number }[]).map(r => ({
-        zona: r.zona, row_count: r.row_count,
-      })));
+      // Merge zones that differ only in case/spacing by normalizing the key
+      const merged: Record<string, { zona: string; row_count: number }> = {};
+      for (const r of data as { zona: string; row_count: number }[]) {
+        const norm = normZona(r.zona);
+        if (!merged[norm]) merged[norm] = { zona: r.zona, row_count: 0 };
+        merged[norm].row_count += r.row_count;
+      }
+      setZonaStats(Object.values(merged));
       setLoadingStats(false);
       return;
     }
 
     // Fallback: paginate raw table client-side
-    const counts: Record<string, number> = {};
+    const counts: Record<string, { zona: string; count: number }> = {};
     let from = 0;
+    const STATS_PAGE = 1000;
     for (;;) {
       const { data: batch } = await supabase
         .from('costos_almacen_v2_data')
         .select('raw_data')
-        .range(from, from + 9999);
+        .range(from, from + STATS_PAGE - 1);
       if (!batch || batch.length === 0) break;
       for (const r of batch as { raw_data: Record<string, unknown> }[]) {
-        const z = String(r.raw_data?.[cfg.zonaCol] ?? '').trim();
-        if (z) counts[z] = (counts[z] ?? 0) + 1;
+        const raw = String(r.raw_data?.[cfg.zonaCol] ?? '').trim();
+        if (!raw) continue;
+        const norm = normZona(raw);
+        if (!counts[norm]) counts[norm] = { zona: raw, count: 0 };
+        counts[norm].count++;
       }
-      if (batch.length < 10000) break;
-      from += 10000;
+      if (batch.length < STATS_PAGE) break;
+      from += STATS_PAGE;
     }
     if (Object.keys(counts).length > 0) {
-      setZonaStats(Object.entries(counts).map(([zona, row_count]) => ({ zona, row_count })));
+      setZonaStats(Object.values(counts).map(v => ({ zona: v.zona, row_count: v.count })));
     } else {
       setZonaStats([]);
       setStatsError(true);
@@ -419,28 +663,30 @@ export default function CostosAlmacenV2Page() {
     setSlotColNames([]);
 
     const load = async () => {
-      const { data, error } = await supabase.rpc('fn_v2_rows_by_zonas', {
-        p_zona_col: colConfig.zonaCol,
-        p_zonas: activeZonas,
-      });
-
-      let rows: Record<string, unknown>[] = [];
-
-      if (!error && Array.isArray(data) && data.length > 0) {
-        rows = data as Record<string, unknown>[];
-      } else {
-        // Fallback: full scan + client filter
-        const { data: all } = await supabase
+      // Always use normalized client-side filter to handle case/space differences
+      // between cluster zone names and actual raw_data zone values.
+      // The RPC fn_v2_rows_by_zonas does exact matching which misses rows when
+      // zone strings differ in case (e.g. "Originales" vs "ORIGINALES").
+      const zonaSetNorm = new Set(activeZonas.map(z => normZona(z)));
+      const allRows: Record<string, unknown>[] = [];
+      let from = 0;
+      // Use small page size to avoid PostgREST max_rows truncation (typically 1000)
+      const PAGE = 1000;
+      for (;;) {
+        const { data: batch } = await supabase
           .from('costos_almacen_v2_data')
           .select('raw_data')
-          .limit(50000);
-        const zonaSet = new Set(activeZonas);
-        rows = ((all ?? []) as { raw_data: Record<string, unknown> }[])
-          .map(r => r.raw_data)
-          .filter(r => zonaSet.has(normZona(String(r[colConfig.zonaCol] ?? ''))));
+          .range(from, from + PAGE - 1);
+        if (!batch || batch.length === 0) break;
+        for (const r of batch as { raw_data: Record<string, unknown> }[]) {
+          const z = normZona(String(r.raw_data?.[colConfig.zonaCol] ?? ''));
+          if (zonaSetNorm.has(z)) allRows.push(r.raw_data);
+        }
+        if (batch.length < PAGE) break;
+        from += PAGE;
       }
 
-      setActiveRows(rows);
+      setActiveRows(allRows);
       setLoadingRows(false);
     };
     load();
@@ -894,6 +1140,17 @@ export default function CostosAlmacenV2Page() {
                   {fmt((page - 1) * PAGE_SIZE + 1)}–{fmt(Math.min(page * PAGE_SIZE, sortedRows.length))} de {fmt(sortedRows.length)}
                 </span>
               </div>
+            )}
+
+            {/* ── Pivot: Costo por Slot por Artículo ── */}
+            {!loadingRows && colConfig && slotColNames.length > 0 && activeRows.length > 0 && (
+              <ArticleSlotCostPivot
+                rows={activeRows}
+                colConfig={colConfig}
+                slotCostByUbic={slotCostByUbic}
+                slotColNames={slotColNames}
+                formulaCtx={formulaCtx}
+              />
             )}
           </div>
         )}
