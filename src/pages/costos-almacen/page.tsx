@@ -346,7 +346,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       const sMap: Record<string, any> = {};
       for (const r of filteredMapped) {
         if (!r.ubicacion || sMap[r.ubicacion]) continue;
-        sMap[r.ubicacion] = { total:0, libres:0, bloqueados:0, reservados:0, pct_libres:0, tipo_ubicacion:r.tipo_ubicacion, dimension:'', zona_almacenaje:r.zona_almacenaje };
+        sMap[r.ubicacion] = { total:0, libres:0, bloqueados:0, reservados:0, pct_libres:0, tipo_ubicacion:String(r.tipo_ubicacion??'').trim().toUpperCase(), dimension:'', zona_almacenaje:r.zona_almacenaje };
       }
       if (Object.keys(sMap).length > 0) {
         setSlotStats(sMap);
@@ -389,7 +389,7 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
         for (const td of tdRows) {
           const slotZ = String(td.zona_almacenaje ?? td.zona ?? (slotZonas.length === 1 ? slotZonas[0] : ''));
           const invZ  = slotToInv[slotZ] ?? slotZ;
-          const k = `${invZ}|${td.tipo_ubicacion??''}`;
+          const k = `${invZ}|${String(td.tipo_ubicacion??'').trim().toUpperCase()}`;
           if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
           tdMap[k].total      += Number(td.total)||0;
           tdMap[k].libres     += Number(td.libres)||0;
@@ -424,7 +424,10 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
 
   useEffect(() => {
     if (!Object.keys(slotStats).length || !slotRawCols.length || !Object.keys(slotTdMap).length) return;
-    const zonaMatchFn = (colZ: string, ubZ: string) => colZ === ubZ || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
+    const normZ = (s: string) => s.trim().replace(/\s+/g,'').toUpperCase();
+    const zonaMatchFn = (colZ: string, ubZ: string) =>
+      colZ === ubZ || normZ(colZ) === normZ(ubZ) ||
+      (colZ.startsWith('_cluster_') && normZ(colZ).includes(normZ(ubZ)));
     const cosMap: Record<string, Record<string, number>> = {};
     const dbgMap: Record<string, string> = {};
     for (const [ubic, st] of Object.entries(slotStats)) {
@@ -440,10 +443,11 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       for (const col of slotRawCols) {
         if (seen3.has(col.nombre)) continue;
         seen3.add(col.nombre);
+        const tipoN = st.tipo_ubicacion; // already normalized to UPPERCASE in sMap
         const best =
-          slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
+          slotRawCols.find(c => c.nombre===col.nombre && c.tipo.trim().toUpperCase()===tipoN && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
-          slotRawCols.find(c => c.nombre===col.nombre && c.tipo===st.tipo_ubicacion) ??
+          slotRawCols.find(c => c.nombre===col.nombre && c.tipo.trim().toUpperCase()===tipoN) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo);
         if (!best) { lines.push(`⚠ ${col.nombre}: sin fórmula para tipo "${st.tipo_ubicacion||'—'}" / zona "${st.zona_almacenaje||'—'}"`); continue; }
         const ev = evalFormula(best.formula, vm);

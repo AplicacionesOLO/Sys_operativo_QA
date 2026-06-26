@@ -286,7 +286,8 @@ export default function CostosAlmacenV2Page() {
     // 8. Compute cost per ubicacion
     const normZM = (s: string) => s.trim().replace(/\s+/g, '').toUpperCase();
     const zonaMatch = (colZ: string, ubZ: string) =>
-      colZ === ubZ || normZM(colZ) === normZM(ubZ) || (colZ.startsWith('_cluster_') && colZ.includes(ubZ));
+      colZ === ubZ || normZM(colZ) === normZM(ubZ) ||
+      (colZ.startsWith('_cluster_') && normZM(colZ).includes(normZM(ubZ)));
 
     const costByUbic: Record<string, Record<string, number>> = {};
     let matchedCount = 0;
