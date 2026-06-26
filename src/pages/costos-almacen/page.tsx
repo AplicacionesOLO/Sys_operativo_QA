@@ -424,14 +424,22 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
 
   useEffect(() => {
     if (!Object.keys(slotStats).length || !slotRawCols.length || !Object.keys(slotTdMap).length) return;
-    const normZ = (s: string) => s.trim().replace(/\s+/g,'').toUpperCase();
+    const normZ = (s: string) => String(s ?? '').trim().replace(/\s+/g, '').toUpperCase();
+
+    // Pre-build normalized index of tdMap so lookup is case/space tolerant regardless of pipeline order
+    const tdMapByNorm: Record<string, any> = {};
+    for (const [k, v] of Object.entries(slotTdMap)) {
+      const [zona, tipo] = k.split('|');
+      tdMapByNorm[`${normZ(zona)}|${normZ(tipo)}`] = v;
+    }
+
     const zonaMatchFn = (colZ: string, ubZ: string) =>
       colZ === ubZ || normZ(colZ) === normZ(ubZ) ||
       (colZ.startsWith('_cluster_') && normZ(colZ).includes(normZ(ubZ)));
     const cosMap: Record<string, Record<string, number>> = {};
     const dbgMap: Record<string, string> = {};
     for (const [ubic, st] of Object.entries(slotStats)) {
-      const td = slotTdMap[`${st.zona_almacenaje}|${st.tipo_ubicacion}`];
+      const td = tdMapByNorm[`${normZ(st.zona_almacenaje)}|${normZ(st.tipo_ubicacion)}`];
       if (!td) {
         dbgMap[ubic] = `Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'}\n⚠ No hay slots registrados para este tipo en esta zona.\nVerifica que el tipo "${st.tipo_ubicacion||'—'}" exista en Conteo de Slots para la zona "${st.zona_almacenaje||'—'}".`;
         continue;
@@ -440,14 +448,14 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       cosMap[ubic] = {};
       const seen3 = new Set<string>();
       const lines: string[] = [`Tipo: ${st.tipo_ubicacion||'—'} | Zona: ${st.zona_almacenaje||'—'}`];
+      const tipoN = normZ(st.tipo_ubicacion);
       for (const col of slotRawCols) {
         if (seen3.has(col.nombre)) continue;
         seen3.add(col.nombre);
-        const tipoN = st.tipo_ubicacion; // already normalized to UPPERCASE in sMap
         const best =
-          slotRawCols.find(c => c.nombre===col.nombre && c.tipo.trim().toUpperCase()===tipoN && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
+          slotRawCols.find(c => c.nombre===col.nombre && normZ(c.tipo)===tipoN && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo && zonaMatchFn(c.zona, st.zona_almacenaje)) ??
-          slotRawCols.find(c => c.nombre===col.nombre && c.tipo.trim().toUpperCase()===tipoN) ??
+          slotRawCols.find(c => c.nombre===col.nombre && normZ(c.tipo)===tipoN) ??
           slotRawCols.find(c => c.nombre===col.nombre && !c.tipo);
         if (!best) { lines.push(`⚠ ${col.nombre}: sin fórmula para tipo "${st.tipo_ubicacion||'—'}" / zona "${st.zona_almacenaje||'—'}"`); continue; }
         const ev = evalFormula(best.formula, vm);

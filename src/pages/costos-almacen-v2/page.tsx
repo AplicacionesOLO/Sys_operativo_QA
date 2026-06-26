@@ -2,6 +2,10 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import AppLayout from '@/components/feature/AppLayout';
 import { supabase } from '@/lib/supabase';
 import { evalFormula } from '@/lib/mathEvaluator';
+import { fetchBaseQueryData } from '@/lib/formulaBaseCache';
+import { EMPTY_FORMULA_CTX, toAllDataSources } from '@/lib/formulaEngine';
+import type { FormulaContext } from '@/lib/formulaEngine';
+import { buildVariableDefs, buildVariableMap } from '@/lib/formulaVariables';
 import { useZonaClusters } from '@/hooks/useZonaClusters';
 import ZonaClusterManager, { clusterActiveBg } from '@/components/feature/ZonaClusterManager';
 import V2UploadModal, { V2_COL_CONFIG_KEY } from './components/UploadModal';
@@ -106,6 +110,15 @@ export default function CostosAlmacenV2Page() {
   const [slotColNames,   setSlotColNames]   = useState<string[]>([]);
   const [slotDiag,       setSlotDiag]       = useState<string>('');
 
+  // formula context for system variables (COSTOS_*, FACTOR_*, etc.)
+  const [formulaCtx, setFormulaCtx] = useState<FormulaContext>(EMPTY_FORMULA_CTX);
+  const systemVarMap = useMemo<Record<string, number>>(() => {
+    try {
+      const defs = buildVariableDefs(toAllDataSources(formulaCtx));
+      return defs.length ? buildVariableMap(defs, toAllDataSources(formulaCtx)) : {};
+    } catch { return {}; }
+  }, [formulaCtx]);
+
   const { clusters, loadClusters } = useZonaClusters(CLUSTERS_TABLE);
 
   // ── Init ─────────────────────────────────────────────────────────────────
@@ -113,6 +126,8 @@ export default function CostosAlmacenV2Page() {
     const raw = localStorage.getItem(V2_COL_CONFIG_KEY);
     if (raw) { try { setColConfig(JSON.parse(raw)); } catch {} }
     loadClusters();
+    // Load system variables needed by slot cost formulas
+    fetchBaseQueryData().then(d => { if (d) setFormulaCtx(d); }).catch(() => {});
   }, [loadClusters]);
 
   // ── Zone stats (with fallback) ────────────────────────────────────────────
@@ -175,6 +190,7 @@ export default function CostosAlmacenV2Page() {
     rows: Record<string, unknown>[],
     cfg: ColConfig,
   ) => {
+    // systemVarMap captured from closure — loaded from fetchBaseQueryData on mount
     setSlotDiag('');
     // 1. Unique ubicaciones from V2 rows
     const ubicSet = new Set<string>();
@@ -299,6 +315,7 @@ export default function CostosAlmacenV2Page() {
       if (!td) continue;
 
       const vm = {
+        ...systemVarMap,   // COSTOS_*, FACTOR_*, etc. from formula context
         TOTAL:       td.total,
         LIBRES:      td.libres,
         BLOQUEADOS:  td.bloqueados,
@@ -338,7 +355,7 @@ export default function CostosAlmacenV2Page() {
         `Revisa costos_slots_tipo_columnas.`,
       );
     }
-  }, []);
+  }, [systemVarMap]); // re-run when formula context loads
 
   // ── Load rows for selected zone/cluster ──────────────────────────────────
   useEffect(() => {
@@ -373,11 +390,16 @@ export default function CostosAlmacenV2Page() {
 
       setActiveRows(rows);
       setLoadingRows(false);
-
-      if (rows.length > 0) loadSlotCosts(rows, colConfig);
     };
     load();
-  }, [activeZonas.join('|'), colConfig, loadSlotCosts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeZonas.join('|'), colConfig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Trigger slot costs when rows OR systemVarMap changes ─────────────────
+  useEffect(() => {
+    if (activeRows.length > 0 && colConfig) {
+      loadSlotCosts(activeRows, colConfig);
+    }
+  }, [activeRows, systemVarMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Tipos ────────────────────────────────────────────────────────────────
   const allTipos = useMemo(() => {
