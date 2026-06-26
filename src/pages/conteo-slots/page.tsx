@@ -838,7 +838,13 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
   const filteredSlots = useMemo(() => {
     if (!search) return slots;
     const q = search.toLowerCase();
-    return slots.filter(s => s.ubicacion.toLowerCase().includes(q) || s.coordenada.toLowerCase().includes(q) || s.categoria.toLowerCase().includes(q) || s.estado.toLowerCase().includes(q));
+    return slots.filter(s =>
+      s.ubicacion.toLowerCase().includes(q) ||
+      s.id_almacenamiento.toLowerCase().includes(q) ||
+      s.coordenada.toLowerCase().includes(q) ||
+      s.categoria.toLowerCase().includes(q) ||
+      s.estado.toLowerCase().includes(q)
+    );
   }, [slots, search]);
 
   const addTipoCol = async () => {
@@ -962,7 +968,7 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
             <div className="flex items-center gap-3">
               <div className="relative flex-1 min-w-[200px]">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i className="ri-search-line text-sm text-slate-400"/></div>
-                <input type="text" placeholder="Buscar ubicación, coordenada, categoría..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-100 focus:border-cyan-300 outline-none bg-white placeholder:text-slate-400"/>
+                <input type="text" placeholder="Buscar código, ubicación, coordenada, categoría..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-cyan-100 focus:border-cyan-300 outline-none bg-white placeholder:text-slate-400"/>
               </div>
               <span className="text-xs text-slate-400 whitespace-nowrap">{filteredSlots.length} slots</span>
             </div>
