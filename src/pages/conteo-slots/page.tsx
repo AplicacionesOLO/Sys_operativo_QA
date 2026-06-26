@@ -786,43 +786,49 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
       setSlotTotal(Number(st.total) || 0);
 
-      // Load all rows (no SQL filter). Exact JSONB @> fails because the Excel
-      // may have inconsistent spacing (e.g. "ZONA  ALMACENAJE" vs "ZONA ALMACENAJE")
-      // or NFC/NFD encoding differences, so all filtering is done client-side.
-      const { data: rawAll } = await supabase
-        .from('conteo_slots_raw')
-        .select('id, raw_data')
-        .range(0, 49999);
-
-      const allRows = (rawAll ?? []) as any[];
-      if (!allRows.length) { setSlotLoading(false); return; }
-
-      // charCode diacritic stripping — avoids regex literal Unicode issues.
-      // Also collapses multiple spaces so "ZONA  ALMACENAJE" === "ZONA ALMACENAJE".
+      // charCode diacritic stripping + space normalization.
       const norm = (s: string) =>
         s.normalize('NFD')
           .split('').filter(c => { const cc = c.charCodeAt(0); return cc < 0x0300 || cc > 0x036f; }).join('')
-          .replace(/\s+/g, ' ')
-          .toLowerCase().trim();
+          .replace(/\s+/g, ' ').toLowerCase().trim();
 
-      // Build keyMap from the first row that has non-empty raw_data.
-      const seedRow = allRows.find(r => r.raw_data && Object.keys(r.raw_data).length > 0);
+      // Get ALL distinct Zona Almacenaje strings currently in the DB.
+      // This is the only reliable way to find zone strings with spacing/format
+      // variants (e.g. "ZONA  ALMACENAJE" vs "ZONA ALMACENAJE") without a
+      // full-table scan that PostgREST rejects without ORDER BY.
+      const { data: zonaResumenData } = await supabase.rpc('fn_slots_zona_resumen');
+      const dbZonas: string[] = ((zonaResumenData ?? []) as any[]).map((r: any) => String(r.zona ?? '')).filter(Boolean);
+
+      // Match DB zone strings against cluster zone codes (leading code, e.g. 'ZA15').
+      const clusterCodes = new Set(zonas.map(z => norm(z).split(/[\s-]+/)[0]));
+      const matchingDbZonas = dbZonas.filter(z => clusterCodes.has(norm(z).split(/[\s-]+/)[0]));
+
+      if (!matchingDbZonas.length) { setSlotLoading(false); return; }
+
+      // Query using the exact zone strings that exist in raw_data — contains @> will match.
+      // Tipo filter is client-side to avoid NFC/NFD issues with 'Tipo Ubicación' key.
+      const zoneQueries = matchingDbZonas.map(zona =>
+        supabase.from('conteo_slots_raw')
+          .select('id, raw_data')
+          .contains('raw_data', { 'Zona Almacenaje': zona })
+          .range(0, 49999)
+      );
+      const zoneResults = await Promise.all(zoneQueries);
+      const allRaw = zoneResults.flatMap(({ data }) => (data ?? []) as any[]);
+
+      if (!allRaw.length) { setSlotLoading(false); return; }
+
+      // Build keyMap from first row with data.
+      const seedRow = allRaw.find(r => r.raw_data && Object.keys(r.raw_data).length > 0);
       if (!seedRow) { setSlotLoading(false); return; }
       const keyMap: Record<string, string> = {};
       for (const k of Object.keys(seedRow.raw_data)) keyMap[norm(k)] = k;
       const get = (d: Record<string, unknown>, nk: string) => d[keyMap[nk]];
 
-      // Zone code matching: extract leading code ('ZA15') so both
-      // 'ZA15' and 'ZA15 - ZONA  ALMACENAJE...' match the same cluster zone.
-      const zonaCodes = new Set(zonas.map(z => norm(z).split(/[\s-]+/)[0]));
-      const matchesZone = (rawZona: string) => zonaCodes.has(norm(rawZona).split(/[\s-]+/)[0]);
-
       const tipoNorm = norm(selectedTipo);
-      const filtered = allRows.filter(r => {
-        const d = r.raw_data ?? {};
-        return matchesZone(String(get(d, 'zona almacenaje') ?? '')) &&
-          norm(String(get(d, 'tipo ubicacion') ?? '')) === tipoNorm;
-      });
+      const filtered = allRaw.filter(r =>
+        norm(String(get(r.raw_data ?? {}, 'tipo ubicacion') ?? '')) === tipoNorm
+      );
 
       const mapped: SlotRow[] = filtered.map(r => {
         const d: Record<string, unknown> = r.raw_data ?? {};
