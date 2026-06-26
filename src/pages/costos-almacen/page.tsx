@@ -340,45 +340,27 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       }
 
       setLoadStep('Cargando costos de slots...');
-      // Build slot stats from the inventory itself — it already has tipo_ubicacion and
-      // zona_almacenaje per row, so fn_slot_stats_por_ubicacion (which matches by the
-      // Ubicación string in conteo_slots_raw and can fail to find rows) is not needed.
-      // The per-slot counts (total/libres) are not used in the slot cost formula vm.
+      const ubicaciones = [...new Set(filteredMapped.map(r => r.ubicacion).filter(Boolean))];
+      // Step 1: query slot data for exact zona+tipo per ubicacion (returns exact slot zone strings)
+      const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones }).range(0, 99999);
       const sMap: Record<string, any> = {};
+      for (const s of (sData ?? []) as any[]) {
+        sMap[String(s.ubicacion??'')] = { total:Number(s.total)||0, libres:Number(s.libres)||0, bloqueados:Number(s.bloqueados)||0, reservados:Number(s.reservados)||0, pct_libres:Number(s.pct_libres)||0, tipo_ubicacion:String(s.tipo_ubicacion??''), dimension:String(s.dimension??''), zona_almacenaje:String(s.zona_almacenaje??'') };
+      }
+      // Step 2: for ubicaciones not found in slot data (code or mes mismatch), fall back to
+      // the inventory row's tipo+zona so the formula can still be evaluated.
       for (const r of filteredMapped) {
-        if (r.ubicacion && !sMap[r.ubicacion]) {
-          sMap[r.ubicacion] = {
-            total: 0, libres: 0, bloqueados: 0, reservados: 0, pct_libres: 0,
-            tipo_ubicacion: r.tipo_ubicacion,
-            dimension: '',
-            zona_almacenaje: r.zona_almacenaje,
-          };
-        }
+        if (!r.ubicacion || sMap[r.ubicacion]) continue;
+        sMap[r.ubicacion] = { total:0, libres:0, bloqueados:0, reservados:0, pct_libres:0, tipo_ubicacion:r.tipo_ubicacion, dimension:'', zona_almacenaje:r.zona_almacenaje };
       }
       if (Object.keys(sMap).length > 0) {
         setSlotStats(sMap);
-
-        // fn_slot_tipo_dim_stats expects zone strings as stored in conteo_slots_raw.
-        // The inventory zona_almacenaje may differ slightly (spaces etc.) from the slot
-        // data zone strings, so load fn_slots_zona_resumen to get exact slot zone strings
-        // and build a normalized map so every inventory zone resolves to the correct slot zone.
-        const normalizeZ = (s: string) => String(s).trim().replace(/\s+/g, '').toUpperCase();
-        const [{ data: zResumenData }, { data: slotCols }] = await Promise.all([
-          supabase.rpc('fn_slots_zona_resumen'),
+        const zonasAlm = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
+        const [{ data: tdData }, { data: slotCols }] = await Promise.all([
+          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999),
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
-        // Build inv-zone → slot-zone map using normalized comparison
-        const slotZoneByNorm: Record<string, string> = {};
-        for (const sz of (zResumenData ?? []) as any[]) {
-          slotZoneByNorm[normalizeZ(String(sz.zona ?? ''))] = String(sz.zona ?? '');
-        }
-        // Re-key each sMap entry to use the exact slot zone string so tdMap lookups align
-        for (const v of Object.values(sMap) as any[]) {
-          v.zona_almacenaje = slotZoneByNorm[normalizeZ(v.zona_almacenaje)] ?? v.zona_almacenaje;
-        }
-        const zonasAlm = [...new Set(Object.values(sMap).map((v: any) => v.zona_almacenaje).filter(Boolean))];
-        const { data: tdData } = await supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999);
-        // Aggregate by zona+tipo only (collapse dimensions)
+        // Aggregate by zona+tipo only — dimension is not part of the formula config
         const tdMap: Record<string, any> = {};
         for (const td of (tdData ?? []) as any[]) {
           const k = `${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}`;
