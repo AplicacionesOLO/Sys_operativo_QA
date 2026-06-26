@@ -786,58 +786,24 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
       setSlotTotal(Number(st.total) || 0);
 
-      // charCode diacritic stripping + space normalization.
-      const norm = (s: string) =>
-        s.normalize('NFD')
-          .split('').filter(c => { const cc = c.charCodeAt(0); return cc < 0x0300 || cc > 0x036f; }).join('')
-          .replace(/\s+/g, ' ').toLowerCase().trim();
+      // Use the same JSON-returning RPCs as the export button — these bypass
+      // PostgREST max_rows so all slots are returned regardless of count.
+      const rpc = zonas.length > 1 ? 'fn_slots_detalle_por_zonas_tipo_all' : 'fn_slots_detalle_por_tipo_all';
+      const params = zonas.length > 1 ? { p_zonas: zonas, p_tipo: selectedTipo } : { p_zona: zonas[0], p_tipo: selectedTipo };
+      const { data: json } = await supabase.rpc(rpc, params);
+      const allSlots: any[] = Array.isArray(json) ? json : [];
 
-      // Load all slots — uploads always replace everything so there is only one
-      // dataset in the table. No mes/anio filter needed.
-      const { data: rawAll } = await supabase
-        .from('conteo_slots_raw')
-        .select('id, raw_data')
-        .order('id')
-        .range(0, 49999);
-
-      const allRaw = (rawAll ?? []) as any[];
-      if (!allRaw.length) { setSlotLoading(false); return; }
-
-      // Build keyMap from first row (all rows share the same column structure).
-      const seedRow = allRaw.find((r: any) => r.raw_data && Object.keys(r.raw_data).length > 0);
-      if (!seedRow) { setSlotLoading(false); return; }
-      const keyMap: Record<string, string> = {};
-      for (const k of Object.keys(seedRow.raw_data)) keyMap[norm(k)] = k;
-      const get = (d: Record<string, unknown>, nk: string) => d[keyMap[nk]];
-
-      // Zone code matching — handles spacing variants ('ZA15 - ZONA  ALMACENAJE' → 'za15').
-      const clusterCodes = new Set(zonas.map(z => norm(z).split(/[\s-]+/)[0]));
-      const matchesZone = (rawZona: string) => clusterCodes.has(norm(rawZona).split(/[\s-]+/)[0]);
-
-      const tipoNorm = norm(selectedTipo);
-      const filtered = allRaw.filter((r: any) => {
-        const d = r.raw_data ?? {};
-        return matchesZone(String(get(d, 'zona almacenaje') ?? '')) &&
-          norm(String(get(d, 'tipo ubicacion') ?? '')) === tipoNorm;
-      });
-
-      const mapped: SlotRow[] = filtered.map(r => {
-        const d: Record<string, unknown> = r.raw_data ?? {};
-        const g = (nk: string) => String(get(d, nk) ?? '');
-        return {
-          id_almacenamiento: g('id almacenamiento'),
-          ubicacion:         g('ubicacion'),
-          coordenada:        g('coordenada') || '--',
-          categoria:         g('categoria'),
-          tipo_ubicacion:    g('tipo ubicacion'),
-          dimension:         g('dimension'),
-          estado:            g('estado'),
-          situacion:         g('situacion'),
-          eje_x:             g('eje x'),
-          eje_y:             g('eje y'),
-          eje_z:             g('eje z'),
-        };
-      });
+      const mapped: SlotRow[] = allSlots.map((s: any) => ({
+        id_almacenamiento: String(s.id_almacenamiento ?? ''),
+        ubicacion:         String(s.ubicacion ?? ''),
+        coordenada:        String(s.coordenada ?? '') || '--',
+        categoria:         String(s.categoria ?? ''),
+        tipo_ubicacion:    String(s.tipo_ubicacion ?? ''),
+        dimension:         String(s.dimension ?? ''),
+        estado:            String(s.estado ?? ''),
+        situacion:         '',
+        eje_x: '', eje_y: '', eje_z: '',
+      }));
 
       setSlots(mapped);
       if (mapped.length > 0) setSlotTotal(prev => Math.max(prev, mapped.length));
