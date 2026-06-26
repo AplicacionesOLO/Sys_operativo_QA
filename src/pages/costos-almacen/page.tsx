@@ -340,40 +340,71 @@ function TablaDistribucion({ formulaCtx, extraVars, activeZonas, filtros, refres
       }
 
       setLoadStep('Cargando costos de slots...');
-      const ubicaciones = [...new Set(filteredMapped.map(r => r.ubicacion).filter(Boolean))];
-      // Step 1: query slot data for exact zona+tipo per ubicacion (returns exact slot zone strings)
-      const { data: sData } = await supabase.rpc('fn_slot_stats_por_ubicacion', { p_ubicaciones: ubicaciones }).range(0, 99999);
+      // Build sMap from the inventory — every row gets a tipo+zona entry regardless of
+      // whether fn_slot_stats_por_ubicacion can find it (that RPC filters by mes IS NULL
+      // and also requires Ubicación to match, both of which fail for "Originales" slots).
       const sMap: Record<string, any> = {};
-      for (const s of (sData ?? []) as any[]) {
-        sMap[String(s.ubicacion??'')] = { total:Number(s.total)||0, libres:Number(s.libres)||0, bloqueados:Number(s.bloqueados)||0, reservados:Number(s.reservados)||0, pct_libres:Number(s.pct_libres)||0, tipo_ubicacion:String(s.tipo_ubicacion??''), dimension:String(s.dimension??''), zona_almacenaje:String(s.zona_almacenaje??'') };
-      }
-      // Step 2: for ubicaciones not found in slot data (code or mes mismatch), fall back to
-      // the inventory row's tipo+zona so the formula can still be evaluated.
       for (const r of filteredMapped) {
         if (!r.ubicacion || sMap[r.ubicacion]) continue;
         sMap[r.ubicacion] = { total:0, libres:0, bloqueados:0, reservados:0, pct_libres:0, tipo_ubicacion:r.tipo_ubicacion, dimension:'', zona_almacenaje:r.zona_almacenaje };
       }
       if (Object.keys(sMap).length > 0) {
         setSlotStats(sMap);
-        const zonasAlm = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
-        const [{ data: tdData }, { data: slotCols }] = await Promise.all([
-          supabase.rpc('fn_slot_tipo_dim_stats', { p_zonas_almacenaje: zonasAlm }).range(0, 9999),
+        // Inventory zone strings may differ from slot-data zone strings (spacing, case).
+        // fn_slot_tipo_dim_stats also filters by mes IS NULL and returns nothing when the
+        // uploaded data still has mes values. Use fn_slots_zona_tipo_resumen_all instead
+        // (the same RPC as Costos por Slot "Por zona") which has neither restriction.
+        // fn_slots_zona_resumen provides the authoritative slot zone strings so we can
+        // map inventory zones → slot zones for the RPC call, then map back for tdMap keys.
+        const normalizeZ = (s: string) => String(s).trim().replace(/\s+/g, '').toUpperCase();
+        const invZonas = [...new Set(Object.values(sMap).map((v:any) => v.zona_almacenaje).filter(Boolean))];
+        const [{ data: zResumen }, { data: slotCols }] = await Promise.all([
+          supabase.rpc('fn_slots_zona_resumen'),
           supabase.from('costos_slots_tipo_columnas').select('id, nombre, formula, zona, tipo').not('formula', 'is', null),
         ]);
-        // Aggregate by zona+tipo only — dimension is not part of the formula config
+        // Build normalized slot zone lookup: norm(slotZone) → exact slotZone string
+        const slotZoneByNorm: Record<string, string> = {};
+        for (const sz of (zResumen ?? []) as any[]) {
+          const n = normalizeZ(String(sz.zona ?? ''));
+          if (!slotZoneByNorm[n]) slotZoneByNorm[n] = String(sz.zona ?? '');
+        }
+        // Map each inventory zone to the closest slot zone string
+        const invToSlot: Record<string, string> = {};
+        const slotToInv: Record<string, string> = {};
+        for (const iz of invZonas) {
+          const slotZ = slotZoneByNorm[normalizeZ(iz)] ?? iz; // fallback to inv zone if no match
+          invToSlot[iz] = slotZ;
+          if (!slotToInv[slotZ]) slotToInv[slotZ] = iz;
+        }
+        const slotZonas = [...new Set(Object.values(invToSlot))];
+        // Load slot aggregate with the same JSON-returning RPCs as Costos por Slot
+        const rpcRes = slotZonas.length > 1 ? 'fn_slots_zonas_tipo_resumen_all' : 'fn_slots_zona_tipo_resumen_all';
+        const paramsRes = slotZonas.length > 1 ? { p_zonas: slotZonas } : { p_zona: slotZonas[0] };
+        const { data: tdJson } = slotZonas.length > 0 ? await supabase.rpc(rpcRes, paramsRes) : { data: [] };
+        const tdRows: any[] = Array.isArray(tdJson) ? tdJson : [];
+        // Build tdMap keyed by INVENTORY zone (= sMap.zona_almacenaje) so lookups align.
+        // For single-zone RPCs the response has no zona field — inject it from slotZonas[0]
+        // then map back to the inventory zone via slotToInv.
         const tdMap: Record<string, any> = {};
-        for (const td of (tdData ?? []) as any[]) {
-          const k = `${td.zona_almacenaje??''}|${td.tipo_ubicacion??''}`;
-          if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:Number(td.zona_total)||0, pct_zona:0, pct_libres:0 };
+        for (const td of tdRows) {
+          const slotZ = String(td.zona_almacenaje ?? td.zona ?? (slotZonas.length === 1 ? slotZonas[0] : ''));
+          const invZ  = slotToInv[slotZ] ?? slotZ;
+          const k = `${invZ}|${td.tipo_ubicacion??''}`;
+          if (!tdMap[k]) tdMap[k] = { total:0, libres:0, bloqueados:0, reservados:0, otros:0, zona_total:0, pct_zona:0, pct_libres:0 };
           tdMap[k].total      += Number(td.total)||0;
           tdMap[k].libres     += Number(td.libres)||0;
           tdMap[k].bloqueados += Number(td.bloqueados)||0;
           tdMap[k].reservados += Number(td.reservados)||0;
           tdMap[k].otros      += Number(td.otros)||0;
         }
-        for (const v of Object.values(tdMap) as any[]) {
-          v.pct_zona   = v.zona_total > 0 ? (v.total  / v.zona_total) * 100 : 0;
-          v.pct_libres = v.total      > 0 ? (v.libres / v.total)      * 100 : 0;
+        // zona_total = sum across all tipos in the same inventory zone
+        const zTot: Record<string, number> = {};
+        for (const [k, v] of Object.entries(tdMap) as any[]) { const z=(k as string).split('|')[0]; zTot[z]=(zTot[z]??0)+v.total; }
+        for (const [k, v] of Object.entries(tdMap) as any[]) {
+          const z=(k as string).split('|')[0];
+          v.zona_total = zTot[z]??0;
+          v.pct_zona   = v.zona_total>0 ? (v.total/v.zona_total)*100 : 0;
+          v.pct_libres = v.total>0      ? (v.libres/v.total)*100     : 0;
         }
         setSlotTdMap(tdMap);
         const rawCols = ((slotCols ?? []) as any[]).filter((c:any)=>c.formula?.trim()).map((c:any)=>({id:String(c.id),nombre:String(c.nombre),formula:String(c.formula),zona:String(c.zona??''),tipo:String(c.tipo??'')}));
