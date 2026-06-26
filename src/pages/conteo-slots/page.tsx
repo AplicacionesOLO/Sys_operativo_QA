@@ -786,42 +786,49 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
       setSlotTotal(Number(st.total) || 0);
 
-      // Query by tipo only (no zone filter in SQL) — exact JSONB match on two fields
-      // misses rows when the cluster's stored zone string differs from raw_data format.
-      // Instead, load all rows of this tipo and filter zones client-side.
-      const { data: tipoRaw } = await supabase
-        .from('conteo_slots_raw')
-        .select('id, raw_data')
-        .contains('raw_data', { 'Tipo Ubicación': selectedTipo })
-        .range(0, 49999);
+      // 'Zona Almacenaje' has no accented characters — safe for exact JSONB match.
+      // Tipo filter is intentionally done client-side: 'Tipo Ubicación' contains ó
+      // which may be stored as NFC or NFD in JSONB depending on the source Excel,
+      // making a SQL contains on that key unreliable.
+      const zoneQueries = zonas.map(zona =>
+        supabase.from('conteo_slots_raw')
+          .select('id, raw_data')
+          .contains('raw_data', { 'Zona Almacenaje': zona })
+          .range(0, 49999)
+      );
+      const zoneResults = await Promise.all(zoneQueries);
+      const allRaw = zoneResults.flatMap(({ data }) => (data ?? []) as any[]);
 
-      // Flexible zone matching: exact OR code-prefix match (handles "ZA15" vs "ZA15 - ZONA...")
-      const zonaCodes = zonas.map(z => z.trim().split(/[\s\-]+/)[0]).filter(Boolean);
-      const matchesCluster = (rowZona: string) => {
-        if (!zonas.length) return true;
-        if (zonas.includes(rowZona)) return true;
-        const rt = rowZona.trim();
-        return zonaCodes.some(code => rt === code || rt.startsWith(code + ' ') || rt.startsWith(code + '-'));
-      };
+      // Build a normalized key map from the first row so accent/encoding variants
+      // (NFC ó vs NFD o+combining-accent) resolve to the actual stored key.
+      const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+      const keyMap: Record<string, string> = {};
+      if (allRaw.length > 0) {
+        for (const k of Object.keys(allRaw[0].raw_data ?? {})) keyMap[norm(k)] = k;
+      }
+      const get = (d: Record<string, unknown>, nk: string) => d[keyMap[nk]];
 
-      const allRaw = (tipoRaw ?? []).filter(r =>
-        matchesCluster(String(r.raw_data?.['Zona Almacenaje'] ?? ''))
-      ) as any[];
+      // Filter by tipo using normalized comparison (handles trailing spaces, case, accent variants)
+      const tipoNorm = norm(selectedTipo);
+      const filtered = allRaw.filter(r =>
+        norm(String(get(r.raw_data ?? {}, 'tipo ubicacion') ?? '')) === tipoNorm
+      );
 
-      const mapped: SlotRow[] = allRaw.map(r => {
+      const mapped: SlotRow[] = filtered.map(r => {
         const d: Record<string, unknown> = r.raw_data ?? {};
+        const g = (nk: string) => String(get(d, nk) ?? '');
         return {
-          id_almacenamiento: String(d['Id Almacenamiento'] ?? d['ID Almacenamiento'] ?? ''),
-          ubicacion:         String(d['Ubicación']        ?? d['Ubicacion']        ?? ''),
-          coordenada:        String(d['Coordenada']       ?? '--'),
-          categoria:         String(d['Categoría']        ?? d['Categoria']        ?? ''),
-          tipo_ubicacion:    String(d['Tipo Ubicación']   ?? d['Tipo Ubicacion']   ?? ''),
-          dimension:         String(d['Dimensión']        ?? d['Dimension']        ?? ''),
-          estado:            String(d['Estado']           ?? ''),
-          situacion:         String(d['Situación']        ?? d['Situacion']        ?? ''),
-          eje_x:             String(d['Eje X']            ?? ''),
-          eje_y:             String(d['Eje Y']            ?? ''),
-          eje_z:             String(d['Eje Z']            ?? ''),
+          id_almacenamiento: g('id almacenamiento'),
+          ubicacion:         g('ubicacion'),
+          coordenada:        g('coordenada') || '--',
+          categoria:         g('categoria'),
+          tipo_ubicacion:    g('tipo ubicacion'),
+          dimension:         g('dimension'),
+          estado:            g('estado'),
+          situacion:         g('situacion'),
+          eje_x:             g('eje x'),
+          eje_y:             g('eje y'),
+          eje_z:             g('eje z'),
         };
       });
 
