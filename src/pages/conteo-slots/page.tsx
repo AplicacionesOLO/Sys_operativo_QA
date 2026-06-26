@@ -786,15 +786,27 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
       setSlotTotal(Number(st.total) || 0);
 
-      // Load individual slots directly from raw table — one query per zone (contains = AND match)
-      const zoneQueries = zonas.map(zona =>
-        supabase.from('conteo_slots_raw')
-          .select('id, raw_data')
-          .contains('raw_data', { 'Zona Almacenaje': zona, 'Tipo Ubicación': selectedTipo })
-          .range(0, 49999)
-      );
-      const zoneResults = await Promise.all(zoneQueries);
-      const allRaw = zoneResults.flatMap(({ data }) => (data ?? []) as any[]);
+      // Query by tipo only (no zone filter in SQL) — exact JSONB match on two fields
+      // misses rows when the cluster's stored zone string differs from raw_data format.
+      // Instead, load all rows of this tipo and filter zones client-side.
+      const { data: tipoRaw } = await supabase
+        .from('conteo_slots_raw')
+        .select('id, raw_data')
+        .contains('raw_data', { 'Tipo Ubicación': selectedTipo })
+        .range(0, 49999);
+
+      // Flexible zone matching: exact OR code-prefix match (handles "ZA15" vs "ZA15 - ZONA...")
+      const zonaCodes = zonas.map(z => z.trim().split(/[\s\-]+/)[0]).filter(Boolean);
+      const matchesCluster = (rowZona: string) => {
+        if (!zonas.length) return true;
+        if (zonas.includes(rowZona)) return true;
+        const rt = rowZona.trim();
+        return zonaCodes.some(code => rt === code || rt.startsWith(code + ' ') || rt.startsWith(code + '-'));
+      };
+
+      const allRaw = (tipoRaw ?? []).filter(r =>
+        matchesCluster(String(r.raw_data?.['Zona Almacenaje'] ?? ''))
+      ) as any[];
 
       const mapped: SlotRow[] = allRaw.map(r => {
         const d: Record<string, unknown> = r.raw_data ?? {};
@@ -992,7 +1004,10 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
             </div>
 
             {slotLoading ? (
-              <div className="flex items-center justify-center py-8"><div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin"/></div>
+              <div className="flex flex-col items-center justify-center py-8 gap-2">
+                <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin"/>
+                <span className="text-xs text-slate-400">Cargando slots de tipo {selectedTipo}…</span>
+              </div>
             ) : (
               <div className="border border-slate-200 rounded-lg overflow-auto max-h-[55vh]">
                 <table className="text-xs whitespace-nowrap w-full">
@@ -1035,7 +1050,11 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
                       </tr>
                     ))}
                     {filteredSlots.length === 0 && (
-                      <tr><td colSpan={6 + tipoColumnas.length} className="px-3 py-8 text-center text-slate-400">{search ? 'Sin resultados' : 'Sin slots'}</td></tr>
+                      <tr><td colSpan={6 + tipoColumnas.length} className="px-3 py-8 text-center text-slate-400">
+                        {search
+                          ? <>Sin resultados para <span className="font-mono bg-slate-100 px-1 rounded">{search}</span> en tipo {selectedTipo}. Verifica el código en "Ver datos" o prueba otro tipo de ubicación.</>
+                          : 'Sin slots'}
+                      </td></tr>
                     )}
                   </tbody>
                   {filteredSlots.length > 0 && tipoColumnas.some(c => c.formula && computedTipoCols[c.id]?.value != null) && (
