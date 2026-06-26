@@ -792,18 +792,29 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
           .split('').filter(c => { const cc = c.charCodeAt(0); return cc < 0x0300 || cc > 0x036f; }).join('')
           .replace(/\s+/g, ' ').toLowerCase().trim();
 
-      // Load rows where mes IS NULL — these are the current upload (period detection
-      // did not fire). ORDER BY id is required for PostgREST to honour the Range header.
-      // Old uploads with mes≠null have different column structures (no Ubicación) and
-      // different zone-string formats; mixing them causes keyMap to miss fields.
-      const { data: rawAll } = await supabase
+      // Load current-upload records. An upload assigns mes=null when no Fecha Situación
+      // is detected, and mes=specific when a date is parsed. The same batch can have a
+      // mix (some rows with dates, some without). Querying only mes=null misses the
+      // date-tagged rows even though the aggregate RPCs count all of them.
+      // Fix: load both mes=null AND the most-recent (mes, anio) period in parallel.
+      // Old uploads with different column structures are filtered client-side by zone/tipo.
+      const { data: recentPeriod } = await supabase
         .from('conteo_slots_raw')
-        .select('id, raw_data')
-        .is('mes', null)
-        .order('id')
-        .range(0, 49999);
+        .select('mes, anio')
+        .not('mes', 'is', null)
+        .order('anio', { ascending: false })
+        .order('mes', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      const allRaw = (rawAll ?? []) as any[];
+      const [{ data: nullRaw }, { data: periodRaw }] = await Promise.all([
+        supabase.from('conteo_slots_raw').select('id, raw_data').is('mes', null).order('id').range(0, 49999),
+        recentPeriod
+          ? supabase.from('conteo_slots_raw').select('id, raw_data').eq('mes', recentPeriod.mes).eq('anio', recentPeriod.anio).order('id').range(0, 49999)
+          : Promise.resolve({ data: [] as any[] }),
+      ]);
+
+      const allRaw = [...((nullRaw ?? []) as any[]), ...((periodRaw ?? []) as any[])];
       if (!allRaw.length) { setSlotLoading(false); return; }
 
       // Build keyMap from first row (all rows share the same column structure).

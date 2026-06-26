@@ -36,6 +36,12 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
     if (!parsed || parsed.errors.length > 0 || parsed.totalRows === 0) return;
     setStep('uploading'); setUploadError('');
     try {
+      // Use the first detected period for ALL rows in the batch so every record gets
+      // the same mes/anio. Per-row extraction creates mixed batches (some mes=null,
+      // some mes=specific) that cause the slot detail list to miss date-tagged records.
+      const batchMes = detectedMonths.length > 0 ? detectedMonths[0].mes : null;
+      const batchAnio = detectedMonths.length > 0 ? detectedMonths[0].anio : null;
+
       if (detectedMonths.length > 0) {
         setProgress('Eliminando registros del mismo período...');
         for (const { mes, anio } of detectedMonths) {
@@ -44,13 +50,7 @@ export default function SlotsExcelUploadModal({ onClose, onSuccess }: Props) {
       }
       for (let i = 0; i < parsed.batches.length; i++) {
         setProgress(`Subiendo lote ${i + 1} de ${parsed.batches.length}...`);
-        const rows = parsed.batches[i].map(raw => {
-          const str = String(raw['Fecha Situación'] ?? '').trim();
-          let mes: number | null = null, anio: number | null = null;
-          const m = str.match(/^(\d{4})-(\d{1,2})/) || str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-          if (m) { anio = parseInt(m.length > 3 ? m[3] : m[1]); mes = parseInt(m.length > 3 ? (parseInt(m[1]) > 12 ? m[2] : m[1]) : m[2]); }
-          return { raw_data: raw, mes, anio };
-        });
+        const rows = parsed.batches[i].map(raw => ({ raw_data: raw, mes: batchMes, anio: batchAnio }));
         const { error } = await supabase.from('conteo_slots_raw').insert(rows);
         if (error) throw new Error(`Error en lote ${i + 1}: ${error.message}`);
       }
