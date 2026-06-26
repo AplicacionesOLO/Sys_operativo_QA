@@ -771,36 +771,54 @@ function SlotsTipoDetalle({ zonas, colZoneKey, zoneTotalSlots, systemVarDefs, sy
     loadTipos();
   }, [zonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load slots when tipo changes
+  // Load slots when tipo changes — queries conteo_slots_raw directly to bypass
+  // RPC column-name issues and PostgREST max_rows cap
   useEffect(() => {
     if (!selectedTipo || !zonas.length) return;
     setSlotLoading(true);
     setSlotPage(0);
-    const rpcName = zonas.length > 1 ? 'fn_slots_detalle_por_zonas_tipo' : 'fn_slots_detalle_por_tipo';
-    const params = zonas.length > 1
-      ? { p_zonas: zonas, p_tipo: selectedTipo, p_offset: 0, p_limit: 50000 }
-      : { p_zona: zonas[0], p_tipo: selectedTipo, p_offset: 0, p_limit: 50000 };
+    setSlots([]);
 
-    Promise.all([
-      supabase.rpc(rpcName, params).range(0, 49999),
-      supabase.rpc('fn_slots_tipo_stats', { p_zonas: zonas, p_tipo: selectedTipo }),
-    ]).then(([{ data: sData }, { data: stData }]) => {
-      setSlots(((sData ?? []) as any[]).map((r: any) => ({
-        id_almacenamiento: String(r.id_almacenamiento ?? ''),
-        ubicacion: String(r.ubicacion ?? ''),
-        coordenada: String(r.coordenada ?? ''),
-        categoria: String(r.categoria ?? ''),
-        tipo_ubicacion: String(r.tipo_ubicacion ?? ''),
-        dimension: String(r.dimension ?? ''),
-        estado: String(r.estado ?? ''),
-        situacion: String(r.situacion ?? ''),
-        eje_x: String(r.eje_x ?? ''), eje_y: String(r.eje_y ?? ''), eje_z: String(r.eje_z ?? ''),
-      })));
+    const loadSlots = async () => {
+      // Aggregate stats (keep RPC for total/libres/bloqueados)
+      const { data: stData } = await supabase.rpc('fn_slots_tipo_stats', { p_zonas: zonas, p_tipo: selectedTipo });
       const st = (stData as any[])?.[0] ?? {};
       setTipoStats({ total: Number(st.total)||0, libres: Number(st.libres)||0, bloqueados: Number(st.bloqueados)||0, categorias: String(st.categorias ?? '') });
-      setSlotTotal(Number((stData as any[])?.[0]?.total) || 0);
+      setSlotTotal(Number(st.total) || 0);
+
+      // Load individual slots directly from raw table — one query per zone (contains = AND match)
+      const zoneQueries = zonas.map(zona =>
+        supabase.from('conteo_slots_raw')
+          .select('id, raw_data')
+          .contains('raw_data', { 'Zona Almacenaje': zona, 'Tipo Ubicación': selectedTipo })
+          .range(0, 49999)
+      );
+      const zoneResults = await Promise.all(zoneQueries);
+      const allRaw = zoneResults.flatMap(({ data }) => (data ?? []) as any[]);
+
+      const mapped: SlotRow[] = allRaw.map(r => {
+        const d: Record<string, unknown> = r.raw_data ?? {};
+        return {
+          id_almacenamiento: String(d['Id Almacenamiento'] ?? d['ID Almacenamiento'] ?? ''),
+          ubicacion:         String(d['Ubicación']        ?? d['Ubicacion']        ?? ''),
+          coordenada:        String(d['Coordenada']       ?? '--'),
+          categoria:         String(d['Categoría']        ?? d['Categoria']        ?? ''),
+          tipo_ubicacion:    String(d['Tipo Ubicación']   ?? d['Tipo Ubicacion']   ?? ''),
+          dimension:         String(d['Dimensión']        ?? d['Dimension']        ?? ''),
+          estado:            String(d['Estado']           ?? ''),
+          situacion:         String(d['Situación']        ?? d['Situacion']        ?? ''),
+          eje_x:             String(d['Eje X']            ?? ''),
+          eje_y:             String(d['Eje Y']            ?? ''),
+          eje_z:             String(d['Eje Z']            ?? ''),
+        };
+      });
+
+      setSlots(mapped);
+      if (mapped.length > 0) setSlotTotal(prev => Math.max(prev, mapped.length));
       setSlotLoading(false);
-    });
+    };
+
+    loadSlots();
   }, [selectedTipo, zonas.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load tipo formula columns
