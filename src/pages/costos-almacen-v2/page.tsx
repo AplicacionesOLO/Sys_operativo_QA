@@ -82,12 +82,13 @@ function TH({
 }
 
 // ── Pivot: Costo por Slot por Artículo ────────────────────────────────────────
-function ArticleSlotCostPivot({ rows, colConfig, slotCostByUbic, slotColNames, formulaCtx }: {
+function ArticleSlotCostPivot({ rows, colConfig, slotCostByUbic, slotColNames, formulaCtx, activeTipo }: {
   rows: Record<string, unknown>[];
   colConfig: ColConfig;
   slotCostByUbic: Record<string, Record<string, number>>;
   slotColNames: string[];
   formulaCtx: FormulaContext;
+  activeTipo: string;
 }) {
   const [pivotSearch, setPivotSearch] = useState('');
   const [pivotSortKey, setPivotSortKey] = useState<string>('total');
@@ -1164,6 +1165,7 @@ export default function CostosAlmacenV2Page() {
                 slotCostByUbic={slotCostByUbic}
                 slotColNames={slotColNames}
                 formulaCtx={formulaCtx}
+                activeTipo={activeTipo}
               />
             )}
           </div>
