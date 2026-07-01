@@ -1159,7 +1159,7 @@ export default function CostosAlmacenV2Page() {
             {/* ── Pivot: Costo por Slot por Artículo ── */}
             {!loadingRows && colConfig && slotColNames.length > 0 && activeRows.length > 0 && (
               <ArticleSlotCostPivot
-                rows={activeRows}
+                rows={filteredRows}
                 colConfig={colConfig}
                 slotCostByUbic={slotCostByUbic}
                 slotColNames={slotColNames}
